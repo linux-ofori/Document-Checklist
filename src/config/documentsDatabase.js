@@ -3,10 +3,11 @@ const path = require('node:path');
 const Datastore = require('@seald-io/nedb');
 
 const dataDirectory = path.join(__dirname, '..', '..', 'data');
-fs.mkdirSync(dataDirectory, { recursive: true });
+const databaseFile = process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH || path.join(dataDirectory, 'documents.db');
+fs.mkdirSync(path.dirname(databaseFile), { recursive: true });
 
 const database = new Datastore({
-  filename: path.join(dataDirectory, 'documents.db'),
+  filename: databaseFile,
   autoload: true
 });
 

@@ -23,6 +23,16 @@ The backend is a Node.js and Express API. User records are stored in the local f
 
 The API listens on `http://localhost:3000` by default. Use `npm run dev` for Node's watch mode.
 
+### Run tests
+
+Run the integration tests with Node's built-in test runner:
+
+```bash
+npm test
+```
+
+The tests use temporary user and document databases under `data/`, a test-only JWT secret, and an ephemeral local port. Test data is removed when the test run finishes; the development databases and `.env` are not used or modified.
+
 ### Authentication endpoints
 
 - `POST /api/auth/register` with `{ "name": "A User", "email": "user@example.com", "password": "at-least-8-chars" }`

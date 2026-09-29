@@ -25,6 +25,10 @@ app.use((error, request, response, next) => {
   return response.status(500).json({ error: 'An unexpected server error occurred.' });
 });
 
-app.listen(port, () => {
-  console.log(`Document Checklist API listening on http://localhost:${port}`);
-});
+if (require.main === module) {
+  app.listen(port, () => {
+    console.log(`Document Checklist API listening on http://localhost:${port}`);
+  });
+}
+
+module.exports = app;
