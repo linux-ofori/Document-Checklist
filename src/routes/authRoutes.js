@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
 const {
   createUser,
@@ -12,6 +13,21 @@ const {
 
 const router = express.Router();
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function positiveIntegerEnvironmentValue(name, defaultValue) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : defaultValue;
+}
+
+const loginRateLimit = rateLimit({
+  windowMs: positiveIntegerEnvironmentValue('LOGIN_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000),
+  limit: positiveIntegerEnvironmentValue('LOGIN_RATE_LIMIT_MAX', 5),
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_request, response) => response.status(429).json({
+    error: 'Too many login attempts. Please try again later.'
+  })
+});
 
 function validateCredentials(body, isRegistration) {
   const errors = [];
@@ -109,7 +125,7 @@ router.post('/register', async (request, response, next) => {
   }
 });
 
-router.post('/login', async (request, response, next) => {
+router.post('/login', loginRateLimit, async (request, response, next) => {
   try {
     const credentials = validateCredentials(request.body || {}, false);
 
