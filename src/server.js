@@ -5,6 +5,7 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
 }
 
 const express = require('express');
+const helmet = require('helmet');
 const authRoutes = require('./routes/authRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 require('./config/database');
@@ -12,6 +13,7 @@ require('./config/database');
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '10kb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);

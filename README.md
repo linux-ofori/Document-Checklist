@@ -23,6 +23,8 @@ The backend is a Node.js and Express API. User records are stored in the local f
 
 The API listens on `http://localhost:3000` by default. Use `npm run dev` for Node's watch mode.
 
+The Express app applies Helmet security headers before JSON parsing and API routes. Since this backend serves JSON rather than browser pages, Helmet's Content Security Policy header is disabled; a custom CSP is not needed for the API. If browser pages are added to this server later, define a CSP based on their actual scripts, styles, and resources.
+
 ### Run tests
 
 Run the integration tests with Node's built-in test runner:
