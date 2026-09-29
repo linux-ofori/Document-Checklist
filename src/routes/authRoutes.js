@@ -4,7 +4,9 @@ const jwt = require('jsonwebtoken');
 const requireAuth = require('../middleware/authMiddleware');
 const {
   createUser,
+  deleteUserById,
   findUserByEmail,
+  updateUserById,
   toPublicUser
 } = require('../models/userModel');
 
@@ -30,6 +32,42 @@ function validateCredentials(body, isRegistration) {
   }
 
   return { errors, name, email, password };
+}
+
+function validateProfileUpdates(body) {
+  const errors = [];
+  const updates = {};
+  const allowedFields = ['name', 'email'];
+
+  if (Object.keys(body).length === 0) {
+    errors.push('At least one profile field must be provided.');
+  }
+
+  for (const field of Object.keys(body)) {
+    if (!allowedFields.includes(field)) {
+      errors.push(`The ${field} field cannot be updated.`);
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (name.length < 2 || name.length > 100) {
+      errors.push('Name must be between 2 and 100 characters.');
+    } else {
+      updates.name = name;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'email')) {
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    if (!emailPattern.test(email) || email.length > 254) {
+      errors.push('A valid email address is required.');
+    } else {
+      updates.email = email;
+    }
+  }
+
+  return { errors, updates };
 }
 
 function createToken(user) {
@@ -97,6 +135,49 @@ router.post('/login', async (request, response, next) => {
 
 router.get('/me', requireAuth, (request, response) => {
   return response.json({ user: request.user });
+});
+
+router.put('/me', requireAuth, async (request, response, next) => {
+  try {
+    const profile = validateProfileUpdates(request.body || {});
+
+    if (profile.errors.length > 0) {
+      return response.status(400).json({ error: 'Validation failed.', details: profile.errors });
+    }
+
+    if (profile.updates.email) {
+      const existingUser = await findUserByEmail(profile.updates.email);
+      if (existingUser && existingUser._id !== request.user.id) {
+        return response.status(409).json({ error: 'An account with that email already exists.' });
+      }
+    }
+
+    const user = await updateUserById(request.user.id, profile.updates);
+    if (!user) {
+      return response.status(404).json({ error: 'The authenticated user no longer exists.' });
+    }
+
+    return response.json({ user: toPublicUser(user) });
+  } catch (error) {
+    if (error.errorType === 'uniqueViolated') {
+      return response.status(409).json({ error: 'An account with that email already exists.' });
+    }
+
+    return next(error);
+  }
+});
+
+router.delete('/me', requireAuth, async (request, response, next) => {
+  try {
+    const deleted = await deleteUserById(request.user.id);
+    if (!deleted) {
+      return response.status(404).json({ error: 'The authenticated user no longer exists.' });
+    }
+
+    return response.json({ message: 'Account deleted successfully.' });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 module.exports = router;
