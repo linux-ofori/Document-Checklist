@@ -6,6 +6,7 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
 
 const express = require('express');
 const authRoutes = require('./routes/authRoutes');
+const documentRoutes = require('./routes/documentRoutes');
 require('./config/database');
 
 const app = express();
@@ -13,6 +14,7 @@ const port = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '10kb' }));
 app.use('/api/auth', authRoutes);
+app.use('/api/documents', documentRoutes);
 
 app.use((error, request, response, next) => {
   if (error instanceof SyntaxError && error.status === 400 && 'body' in error) {

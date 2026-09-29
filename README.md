@@ -31,6 +31,18 @@ The API listens on `http://localhost:3000` by default. Use `npm run dev` for Nod
 - `PUT /api/auth/me` with `Authorization: Bearer <token>` and one or both editable profile fields, such as `{ "name": "Updated Name", "email": "updated@example.com" }`
 - `DELETE /api/auth/me` with `Authorization: Bearer <token>`
 
-Registration and login return a JWT in `token` and the sanitized user in `user`. The document checklist functionality is not implemented yet.
+Registration and login return a JWT in `token` and the sanitized user in `user`.
 
 The profile endpoint accepts `name` (2-100 characters) and `email` (a valid email address up to 254 characters). It rejects other fields and returns the updated sanitized user in `user`. Deleting the account returns `{ "message": "Account deleted successfully." }`. Both profile endpoints act only on the account associated with the Bearer token.
+
+### Document endpoints
+
+All document endpoints require `Authorization: Bearer <token>`. In Postman, set **Authorization** to **Bearer Token** and use the token returned by registration or login. Documents are stored separately in `data/documents.db` and are always scoped to the authenticated user.
+
+- `POST /api/documents` creates a document. The JSON body requires `name` (1-150 characters) and optionally accepts `completed` (boolean, defaults to `false`). Example body: `{ "name": "Passport", "completed": false }`.
+- `GET /api/documents` lists only the authenticated user's documents.
+- `GET /api/documents/:id` gets one document owned by the authenticated user.
+- `PUT /api/documents/:id` updates `name`, `completed`, or both. Example body: `{ "completed": true }`.
+- `DELETE /api/documents/:id` deletes a document owned by the authenticated user.
+
+Create and update requests reject other fields, including document IDs and owner IDs. A successful create returns `201` with `{ "document": { "id": "...", "name": "Passport", "completed": false, "createdAt": "...", "updatedAt": "..." } }`. Listing returns `{ "documents": [...] }`; get and update return `{ "document": { ... } }`; delete returns `{ "message": "Document deleted successfully." }`. Invalid IDs return `400`; missing or non-owned documents return `404`.
