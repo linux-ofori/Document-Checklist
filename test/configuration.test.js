@@ -35,6 +35,21 @@ function startWithJwtSecret(secret) {
   });
 }
 
+function startWithDatabasePaths(usersDatabasePath, documentsDatabasePath) {
+  const environment = {
+    ...process.env,
+    JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
+    DOCUMENT_CHECKLIST_USERS_DB_PATH: usersDatabasePath,
+    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: documentsDatabasePath
+  };
+
+  return spawnSync(process.execPath, ['-e', `require(${JSON.stringify(serverPath)})`], {
+    cwd: temporaryWorkingDirectory,
+    env: environment,
+    encoding: 'utf8'
+  });
+}
+
 test('fails startup when the JWT secret is missing, empty, whitespace-only, or too short', () => {
   for (const [description, secret] of [
     ['missing', undefined],
@@ -49,4 +64,16 @@ test('fails startup when the JWT secret is missing, empty, whitespace-only, or t
       /JWT_SECRET must be configured with at least 32 non-whitespace characters\./
     );
   }
+});
+
+test('rejects users and documents database paths that resolve to the same file', () => {
+  const usersDatabasePath = path.join(temporaryWorkingDirectory, 'path-check', 'users.db');
+  const documentsDatabasePath = `${path.join(temporaryWorkingDirectory, 'path-check', 'nested')}`
+    + `${path.sep}..${path.sep}users.db`;
+  const result = startWithDatabasePaths(usersDatabasePath, documentsDatabasePath);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /The users and documents database paths must be different\./);
+  assert.doesNotMatch(result.stderr, /path-check/);
+  assert.equal(fs.existsSync(path.join(temporaryWorkingDirectory, 'path-check')), false);
 });
