@@ -174,6 +174,20 @@ test('authentication, account management, and document API', async (t) => {
     })).status, 400);
   });
 
+  await t.test('rejects oversized JSON request bodies', async () => {
+    const oversizedRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'A'.repeat(11 * 1024),
+        email: 'oversized@example.com',
+        password: 'correct-horse-1'
+      }
+    });
+
+    assert.equal(oversizedRegistration.status, 413);
+    assert.deepEqual(oversizedRegistration.payload, { error: 'Request body is too large.' });
+  });
+
   await t.test('never returns passwords or hashes and supports profile routes', async () => {
     const profile = await request('/api/auth/me', { token: primaryToken });
     assert.equal(profile.status, 200);

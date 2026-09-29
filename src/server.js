@@ -19,6 +19,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 
 app.use((error, request, response, next) => {
+  if (error.type === 'entity.too.large') {
+    return response.status(413).json({ error: 'Request body is too large.' });
+  }
+
   if (error instanceof SyntaxError && error.status === 400 && 'body' in error) {
     return response.status(400).json({ error: 'Request body must contain valid JSON.' });
   }
