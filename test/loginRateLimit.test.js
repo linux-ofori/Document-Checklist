@@ -11,6 +11,8 @@ process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'use
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.LOGIN_RATE_LIMIT_WINDOW_MS = '900000';
 process.env.LOGIN_RATE_LIMIT_MAX = '5';
+process.env.REGISTRATION_RATE_LIMIT_WINDOW_MS = '900000';
+process.env.REGISTRATION_RATE_LIMIT_MAX = '2';
 
 const app = require('../src/server');
 let server;
@@ -86,4 +88,13 @@ test('limits repeated login requests without limiting other auth routes', async 
     body: { name: 'Second User', email: 'second-rate-limit@example.com', password: 'safe-test-password' }
   });
   assert.equal(registrationAfterLimit.status, 201);
+
+  const limitedRegistration = await request('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Third User', email: 'third-rate-limit@example.com', password: 'safe-test-password' }
+  });
+  assert.equal(limitedRegistration.status, 429);
+  assert.deepEqual(limitedRegistration.payload, {
+    error: 'Too many registration attempts. Please try again later.'
+  });
 });

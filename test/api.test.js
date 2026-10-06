@@ -11,6 +11,7 @@ const passwordAtBcryptLimit = 'a'.repeat(72);
 process.env.JWT_SECRET = testJwtSecret;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
+process.env.REGISTRATION_RATE_LIMIT_MAX = '20';
 
 const app = require('../src/server');
 const database = require('../src/config/database');

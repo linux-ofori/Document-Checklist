@@ -45,7 +45,7 @@ The tests use temporary user and document databases under `data/`, a test-only J
 
 Registration and login return a JWT in `token` and the sanitized user in `user`.
 
-Login requests are limited to 5 per client IP in a 15-minute window. Configure `LOGIN_RATE_LIMIT_MAX` and `LOGIN_RATE_LIMIT_WINDOW_MS` with positive integers to override the defaults. Exceeding the limit returns HTTP `429` with a JSON error. The limiter applies only to `POST /api/auth/login`.
+Login and registration requests are each limited to 5 per client IP in a 15-minute window, with independent quotas. Configure `LOGIN_RATE_LIMIT_MAX` and `LOGIN_RATE_LIMIT_WINDOW_MS` to override the login limit, and `REGISTRATION_RATE_LIMIT_MAX` and `REGISTRATION_RATE_LIMIT_WINDOW_MS` to override the registration limit. Values must be positive integers. Exceeding either limit returns HTTP `429` with a JSON error.
 
 The application does not enable Express `trust proxy` by default. If it runs behind a reverse proxy or load balancer, configure trust only for the known proxy addresses or a verified hop count that matches the deployment topology. Do not blindly trust forwarded headers: clients that can spoof `X-Forwarded-For` could evade IP-based limits. With proxy trust disabled, requests may all appear to come from the proxy IP. The default in-memory limiter is per process; deployments with multiple instances should configure a shared rate-limit store to enforce one quota across instances.
 

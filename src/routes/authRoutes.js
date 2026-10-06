@@ -30,6 +30,16 @@ const loginRateLimit = rateLimit({
   })
 });
 
+const registrationRateLimit = rateLimit({
+  windowMs: positiveIntegerEnvironmentValue('REGISTRATION_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000),
+  limit: positiveIntegerEnvironmentValue('REGISTRATION_RATE_LIMIT_MAX', 5),
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_request, response) => response.status(429).json({
+    error: 'Too many registration attempts. Please try again later.'
+  })
+});
+
 function validateCredentials(body, isRegistration) {
   const errors = [];
   const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -98,7 +108,7 @@ function createToken(user) {
   });
 }
 
-router.post('/register', async (request, response, next) => {
+router.post('/register', registrationRateLimit, async (request, response, next) => {
   try {
     const credentials = validateCredentials(request.body || {}, true);
 
