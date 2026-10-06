@@ -9,19 +9,26 @@ async function requireAuth(request, response, next) {
     return response.status(401).json({ error: 'A Bearer token is required.' });
   }
 
+  let payload;
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await findUserById(payload.sub);
-
-    if (!user) {
-      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
-    }
-
-    request.user = toPublicUser(user);
-    return next();
+    payload = jwt.verify(token, process.env.JWT_SECRET);
   } catch (error) {
     return response.status(401).json({ error: 'The token is invalid or expired.' });
   }
+
+  let user;
+  try {
+    user = await findUserById(payload.sub);
+  } catch (error) {
+    return next(error);
+  }
+
+  if (!user) {
+    return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+  }
+
+  request.user = toPublicUser(user);
+  return next();
 }
 
 module.exports = requireAuth;

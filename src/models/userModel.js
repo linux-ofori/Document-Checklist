@@ -5,8 +5,13 @@ function toPublicUser(user) {
     return null;
   }
 
-  const { _id, password, passwordHash, ...publicUser } = user;
-  return { id: _id, ...publicUser };
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt
+  };
 }
 
 function createUser({ name, email, password }) {

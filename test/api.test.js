@@ -12,6 +12,8 @@ process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'use
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 
 const app = require('../src/server');
+const database = require('../src/config/database');
+const { toPublicUser } = require('../src/models/userModel');
 let server;
 let baseUrl;
 
@@ -61,6 +63,30 @@ function assertSanitizedUser(user) {
   assert.equal(Object.hasOwn(user, 'passwordHash'), false);
 }
 
+test('public user serialization allows only intended user fields', () => {
+  const publicUser = toPublicUser({
+    _id: 'user-id',
+    name: 'Public User',
+    email: 'public@example.com',
+    createdAt: '2026-10-06T00:00:00.000Z',
+    updatedAt: '2026-10-06T00:00:00.000Z',
+    password: 'stored-password',
+    passwordHash: 'stored-hash',
+    internalSecret: 'must-not-be-returned'
+  });
+
+  assert.deepEqual(publicUser, {
+    id: 'user-id',
+    name: 'Public User',
+    email: 'public@example.com',
+    createdAt: '2026-10-06T00:00:00.000Z',
+    updatedAt: '2026-10-06T00:00:00.000Z'
+  });
+  assert.equal(Object.hasOwn(publicUser, 'password'), false);
+  assert.equal(Object.hasOwn(publicUser, 'passwordHash'), false);
+  assert.equal(Object.hasOwn(publicUser, 'internalSecret'), false);
+});
+
 test('authentication, account management, and document API', async (t) => {
   const registration = await request('/api/auth/register', {
     method: 'POST',
@@ -99,6 +125,25 @@ test('authentication, account management, and document API', async (t) => {
     for (const route of ['/api/auth/me', '/api/documents']) {
       assert.equal((await request(route)).status, 401);
       assert.equal((await request(route, { token: 'not-a-valid-token' })).status, 401);
+    }
+  });
+
+  await t.test('returns a generic server error when authenticated user lookup fails', async () => {
+    const originalFindOne = database.findOne;
+    const originalConsoleError = console.error;
+    const databaseError = new Error('Sensitive database failure at C:\\private\\users.db');
+
+    database.findOne = (_query, callback) => callback(databaseError);
+    console.error = () => {};
+
+    try {
+      const response = await request('/api/auth/me', { token: primaryToken });
+      assert.equal(response.status, 500);
+      assert.deepEqual(response.payload, { error: 'An unexpected server error occurred.' });
+      assert.doesNotMatch(JSON.stringify(response.payload), /Sensitive database failure|private\\users\.db/);
+    } finally {
+      database.findOne = originalFindOne;
+      console.error = originalConsoleError;
     }
   });
 
