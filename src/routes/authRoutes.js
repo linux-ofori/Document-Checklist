@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
+const { deleteDocumentsByOwnerId } = require('../models/documentModel');
 const {
   createUser,
   deleteUserById,
@@ -185,6 +186,7 @@ router.put('/me', requireAuth, async (request, response, next) => {
 
 router.delete('/me', requireAuth, async (request, response, next) => {
   try {
+    await deleteDocumentsByOwnerId(request.user.id);
     const deleted = await deleteUserById(request.user.id);
     if (!deleted) {
       return response.status(404).json({ error: 'The authenticated user no longer exists.' });

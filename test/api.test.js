@@ -13,6 +13,7 @@ process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 
 
 const app = require('../src/server');
 const database = require('../src/config/database');
+const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const { toPublicUser } = require('../src/models/userModel');
 let server;
 let baseUrl;
@@ -261,11 +262,17 @@ test('authentication, account management, and document API', async (t) => {
     });
     assert.equal(account.status, 201);
 
+    const document = await request('/api/documents', {
+      method: 'POST', token: account.payload.token, body: { name: 'Document to clean up' }
+    });
+    assert.equal(document.status, 201);
+
     const deleted = await request('/api/auth/me', {
       method: 'DELETE', token: account.payload.token
     });
     assert.equal(deleted.status, 200);
     assert.equal(deleted.payload.message, 'Account deleted successfully.');
+    assert.deepEqual(await findDocumentsByOwnerId(account.payload.user.id), []);
     assert.equal((await request('/api/auth/me', { token: account.payload.token })).status, 401);
   });
 });

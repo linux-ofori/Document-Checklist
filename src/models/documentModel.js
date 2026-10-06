@@ -75,9 +75,16 @@ function deleteDocumentById(id, ownerId) {
   });
 }
 
+function deleteDocumentsByOwnerId(ownerId) {
+  return new Promise((resolve, reject) => {
+    database.remove({ ownerId }, { multi: true }, (error, count) => error ? reject(error) : resolve(count));
+  });
+}
+
 module.exports = {
   createDocument,
   deleteDocumentById,
+  deleteDocumentsByOwnerId,
   findDocumentById,
   findDocumentsByOwnerId,
   toPublicDocument,
