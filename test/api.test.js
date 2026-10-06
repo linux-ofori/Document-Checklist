@@ -6,6 +6,7 @@ const { after, before, test } = require('node:test');
 const dataDirectory = path.resolve(__dirname, '..', 'data');
 const testDataDirectory = fs.mkdtempSync(path.join(dataDirectory, '.test-'));
 const testJwtSecret = 'document-checklist-automated-test-secret';
+const passwordAtBcryptLimit = 'a'.repeat(72);
 
 process.env.JWT_SECRET = testJwtSecret;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
@@ -91,11 +92,12 @@ test('public user serialization allows only intended user fields', () => {
 test('authentication, account management, and document API', async (t) => {
   const registration = await request('/api/auth/register', {
     method: 'POST',
-    body: { name: 'Primary User', email: 'primary@example.com', password: 'correct-horse-1' }
+    body: { name: 'Primary User', email: 'primary@example.com', password: passwordAtBcryptLimit }
   });
   const primaryToken = registration.payload.token;
 
   await t.test('registers a user and rejects duplicate email', async () => {
+    assert.equal(Buffer.byteLength(passwordAtBcryptLimit, 'utf8'), 72);
     assert.equal(registration.status, 201);
     assertSanitizedUser(registration.payload.user);
 
@@ -109,7 +111,7 @@ test('authentication, account management, and document API', async (t) => {
   await t.test('logs in with correct credentials and rejects incorrect credentials', async () => {
     const successfulLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { email: 'primary@example.com', password: 'correct-horse-1' }
+      body: { email: 'primary@example.com', password: passwordAtBcryptLimit }
     });
     assert.equal(successfulLogin.status, 200);
     assertSanitizedUser(successfulLogin.payload.user);
@@ -120,6 +122,39 @@ test('authentication, account management, and document API', async (t) => {
       body: { email: 'primary@example.com', password: 'incorrect-horse' }
     });
     assert.equal(failedLogin.status, 401);
+  });
+
+  await t.test('rejects passwords that bcrypt would truncate on registration and login', async () => {
+    const tooLongAsciiPassword = 'a'.repeat(73);
+    const tooLongUnicodePassword = 'é'.repeat(37);
+
+    assert.equal(Buffer.byteLength(tooLongAsciiPassword, 'utf8'), 73);
+    assert.equal(Buffer.byteLength(tooLongUnicodePassword, 'utf8'), 74);
+
+    for (const [email, password] of [
+      ['long-ascii@example.com', tooLongAsciiPassword],
+      ['long-unicode@example.com', tooLongUnicodePassword]
+    ]) {
+      const registrationAttempt = await request('/api/auth/register', {
+        method: 'POST',
+        body: { name: 'Long Password User', email, password }
+      });
+      assert.equal(registrationAttempt.status, 400);
+      assert.deepEqual(registrationAttempt.payload, {
+        error: 'Validation failed.',
+        details: ['Password must not exceed 72 UTF-8 bytes.']
+      });
+
+      const loginAttempt = await request('/api/auth/login', {
+        method: 'POST',
+        body: { email: 'primary@example.com', password }
+      });
+      assert.equal(loginAttempt.status, 400);
+      assert.deepEqual(loginAttempt.payload, {
+        error: 'Validation failed.',
+        details: ['Password must not exceed 72 UTF-8 bytes.']
+      });
+    }
   });
 
   await t.test('rejects protected requests without a valid token', async () => {
@@ -249,7 +284,7 @@ test('authentication, account management, and document API', async (t) => {
     assertSanitizedUser(registration.payload.user);
     const login = await request('/api/auth/login', {
       method: 'POST',
-      body: { email: 'primary@example.com', password: 'correct-horse-1' }
+      body: { email: 'primary@example.com', password: passwordAtBcryptLimit }
     });
     assert.equal(login.status, 200);
     assertSanitizedUser(login.payload.user);

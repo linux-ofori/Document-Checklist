@@ -48,6 +48,10 @@ function validateCredentials(body, isRegistration) {
     errors.push('Password must be between 8 and 128 characters.');
   }
 
+  if (bcrypt.truncates(password)) {
+    errors.push('Password must not exceed 72 UTF-8 bytes.');
+  }
+
   return { errors, name, email, password };
 }
 
