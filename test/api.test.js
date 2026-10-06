@@ -61,6 +61,19 @@ async function request(route, { method = 'GET', token, body } = {}) {
   return { status: response.status, payload };
 }
 
+test('returns JSON 404 responses for unknown API paths and unsupported methods', async () => {
+  for (const [route, method] of [
+    ['/api/auth/does-not-exist', 'GET'],
+    ['/api/auth/login', 'PATCH']
+  ]) {
+    const response = await fetch(`${baseUrl}${route}`, { method });
+
+    assert.equal(response.status, 404);
+    assert.match(response.headers.get('content-type') || '', /^application\/json\b/);
+    assert.deepEqual(await response.json(), { error: 'Route not found.' });
+  }
+});
+
 function assertSanitizedUser(user) {
   assert.equal(Object.hasOwn(user, 'password'), false);
   assert.equal(Object.hasOwn(user, 'passwordHash'), false);

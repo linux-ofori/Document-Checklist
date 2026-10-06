@@ -19,6 +19,10 @@ app.use(express.json({ limit: '10kb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 
+app.use('/api', (request, response) => {
+  return response.status(404).json({ error: 'Route not found.' });
+});
+
 app.use((error, request, response, next) => {
   if (error.type === 'entity.too.large') {
     return response.status(413).json({ error: 'Request body is too large.' });
