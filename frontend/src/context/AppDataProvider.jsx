@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useAuth } from './AuthProvider'
 import {
   fetchApplications,
   fetchDocuments,
@@ -34,40 +35,79 @@ import { GlobalOverlays } from '../components/product/GlobalOverlays'
 
 export function AppDataProvider({ children }) {
   const [state, dispatch] = useReducer(appDataReducer, INITIAL_STATE)
-  const isMountedRef = useRef(true)
+  const [hydrationRetry, setHydrationRetry] = useState(0)
+  const { status: authStatus, user } = useAuth()
+  const hydrationRef = useRef({ sessionId: null, promise: null })
+  const sessionId = user?.id ?? user?.email ?? null
+  const authSessionRef = useRef({ authStatus, sessionId })
+  authSessionRef.current = { authStatus, sessionId }
 
   useEffect(() => {
-    isMountedRef.current = true
+    if (authStatus === 'unauthenticated') {
+      hydrationRef.current = { sessionId: null, promise: null }
+      setHydrationRetry(0)
+      dispatch({ type: ACTIONS.AUTH_RESET })
+      return undefined
+    }
 
-    const hydrate = async () => {
-      try {
-        const [processes, applications, documents, notifications, profile] = await Promise.all([
-          fetchProcesses(),
-          fetchApplications(),
-          fetchDocuments(),
-          fetchNotifications(),
-          fetchProfile(),
-        ])
+    if (authStatus !== 'authenticated') return undefined
 
-        if (!isMountedRef.current) return
+    if (hydrationRef.current.sessionId !== sessionId) {
+      hydrationRef.current = { sessionId, promise: null }
+      dispatch({ type: ACTIONS.AUTH_RESET })
+    }
 
-        dispatch({ type: ACTIONS.HYDRATE, payload: { processes, applications, documents, notifications, profile } })
-      } catch (error) {
-        if (!isMountedRef.current) return
+    if (!hydrationRef.current.promise) {
+      const hydrationPromise = Promise.all([
+        fetchProcesses(),
+        fetchApplications(),
+        fetchDocuments(),
+        fetchNotifications(),
+        fetchProfile(),
+      ])
+        .then(([processes, applications, documents, notifications, profile]) => ({
+          processes,
+          applications,
+          documents,
+          notifications,
+          profile,
+        }))
+        .catch((error) => {
+          if (hydrationRef.current.promise === hydrationPromise) {
+            hydrationRef.current.promise = null
+          }
+          throw error
+        })
+      hydrationRef.current.promise = hydrationPromise
+    }
 
+    let isActive = true
+    hydrationRef.current.promise
+      .then((payload) => {
+        if (isActive) dispatch({ type: ACTIONS.HYDRATE, payload })
+      })
+      .catch((error) => {
+        if (!isActive) return
         dispatch({
           type: ACTIONS.HYDRATE_FAILED,
           payload: error instanceof Error ? error.message : 'We could not load your account data.',
         })
-      }
-    }
-
-    hydrate()
+      })
 
     return () => {
-      isMountedRef.current = false
+      isActive = false
     }
-  }, [])
+  }, [authStatus, hydrationRetry, sessionId])
+
+  const retryHydration = useCallback(() => {
+    if (
+      authStatus === 'authenticated'
+      && authSessionRef.current.authStatus === 'authenticated'
+      && authSessionRef.current.sessionId === sessionId
+    ) {
+      setHydrationRetry((retry) => retry + 1)
+    }
+  }, [authStatus, sessionId])
 
   const applicationViews = useMemo(
     () => state.applications.map((application) => buildApplicationView(application, state.documents)),
@@ -457,6 +497,7 @@ export function AppDataProvider({ children }) {
       ...state,
       isLoading: state.status === 'loading',
       error: state.error,
+      retryHydration,
       applicationViews,
       documentViews,
       notificationViews,
@@ -491,6 +532,7 @@ export function AppDataProvider({ children }) {
     }),
     [
       state,
+      retryHydration,
       applicationViews,
       documentViews,
       notificationViews,

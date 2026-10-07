@@ -3,6 +3,7 @@ import { createId } from '../services'
 export const ACTIONS = {
   HYDRATE: 'HYDRATE',
   HYDRATE_FAILED: 'HYDRATE_FAILED',
+  AUTH_RESET: 'AUTH_RESET',
   REQUIREMENT_UPDATED: 'REQUIREMENT_UPDATED',
   APPLICATION_ADDED: 'APPLICATION_ADDED',
   APPLICATION_PATCHED: 'APPLICATION_PATCHED',
@@ -85,6 +86,9 @@ export function appDataReducer(state, action) {
 
     case ACTIONS.HYDRATE_FAILED:
       return { ...state, status: 'error', error: action.payload }
+
+    case ACTIONS.AUTH_RESET:
+      return { ...INITIAL_STATE }
 
     case ACTIONS.REQUIREMENT_UPDATED:
       return {
