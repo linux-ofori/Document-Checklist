@@ -55,6 +55,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const authRoutes = require('./routes/authRoutes');
+const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 require('./config/database');
 
@@ -81,6 +82,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10kb' }));
 app.use('/api/auth', authRoutes);
+app.use('/api/applications', applicationRoutes);
 app.use('/api/documents', documentRoutes);
 
 app.use('/api', (request, response) => {

@@ -3,6 +3,11 @@ const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
 const { findUserById } = require('../models/userModel');
 const {
+  findApplicationById,
+  findDocumentRequirementReferences,
+  clearDocumentRequirementReferences
+} = require('../models/applicationModel');
+const {
   createDocument,
   deleteDocumentById,
   findDocumentById,
@@ -37,7 +42,7 @@ const documentTypes = new Set([
 const documentStatuses = new Set(['verified', 'in-review', 'expiring', 'expired', 'draft']);
 const allowedFields = ['name', 'completed', 'documentType', 'status', 'applicationId', 'expiresAt', 'note'];
 const documentIdPattern = /^[a-z0-9]{16}$/i;
-const applicationIdPattern = /^[a-z0-9][a-z0-9-]{0,63}$/i;
+const applicationIdPattern = /^app-[a-z0-9][a-z0-9-]{0,59}$/i;
 const isoDateTimePattern = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const maximumNoteLength = 2000;
 
@@ -165,13 +170,20 @@ router.post('/', async (request, response, next) => {
       return response.status(400).json({ error: 'Validation failed.', details: input.errors });
     }
 
-    const document = await withAccountOperationLock(request.user.id, async () => {
+    const result = await withAccountOperationLock(request.user.id, async () => {
       const owner = await findUserById(request.user.id);
       if (!owner || owner.deleting) {
-        return null;
+        return { kind: 'missing-owner' };
       }
 
-      return createDocument({
+      if (input.updates.applicationId) {
+        const application = await findApplicationById(input.updates.applicationId, request.user.id);
+        if (!application) {
+          return { kind: 'missing-application' };
+        }
+      }
+
+      const document = await createDocument({
         ownerId: request.user.id,
         name: input.updates.name,
         completed: input.updates.completed === undefined ? false : input.updates.completed,
@@ -181,13 +193,17 @@ router.post('/', async (request, response, next) => {
         expiresAt: input.updates.expiresAt,
         note: input.updates.note
       });
+      return { kind: 'created', document };
     });
 
-    if (!document) {
+    if (result.kind === 'missing-owner') {
       return response.status(401).json({ error: 'The authenticated user no longer exists.' });
     }
+    if (result.kind === 'missing-application') {
+      return response.status(404).json({ error: 'Application not found.' });
+    }
 
-    return response.status(201).json({ document: toPublicDocument(document) });
+    return response.status(201).json({ document: toPublicDocument(result.document) });
   } catch (error) {
     return next(error);
   }
@@ -230,12 +246,63 @@ router.put('/:id', async (request, response, next) => {
       return response.status(400).json({ error: 'Validation failed.', details: input.errors });
     }
 
-    const document = await updateDocumentById(request.params.id, request.user.id, input.updates);
-    if (!document) {
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return { kind: 'missing-owner' };
+      }
+
+      const currentDocument = await findDocumentById(request.params.id, request.user.id);
+      if (!currentDocument) {
+        return { kind: 'missing-document' };
+      }
+
+      if (Object.hasOwn(input.updates, 'applicationId')
+          || Object.hasOwn(input.updates, 'documentType')) {
+        const requirementReferences = await findDocumentRequirementReferences(
+          request.user.id,
+          request.params.id
+        );
+        const applicationId = Object.hasOwn(input.updates, 'applicationId')
+          ? input.updates.applicationId
+          : currentDocument.applicationId;
+        const documentType = Object.hasOwn(input.updates, 'documentType')
+          ? input.updates.documentType
+          : currentDocument.documentType;
+        if (requirementReferences.some((reference) =>
+          reference.applicationId !== applicationId || reference.documentType !== documentType)) {
+          return { kind: 'invalid-requirement-reference' };
+        }
+      }
+
+      if (input.updates.applicationId) {
+        const application = await findApplicationById(input.updates.applicationId, request.user.id);
+        if (!application) {
+          return { kind: 'missing-application' };
+        }
+      }
+
+      const document = await updateDocumentById(request.params.id, request.user.id, input.updates);
+      return document ? { kind: 'updated', document } : { kind: 'missing-document' };
+    });
+
+    if (result.kind === 'missing-owner') {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
+    if (result.kind === 'missing-application') {
+      return response.status(404).json({ error: 'Application not found.' });
+    }
+    if (result.kind === 'invalid-requirement-reference') {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['Document type and application cannot be changed while the document is linked to a requirement.']
+      });
+    }
+    if (result.kind === 'missing-document') {
       return response.status(404).json({ error: 'Document not found.' });
     }
 
-    return response.json({ document: toPublicDocument(document) });
+    return response.json({ document: toPublicDocument(result.document) });
   } catch (error) {
     return next(error);
   }
@@ -247,7 +314,15 @@ router.delete('/:id', async (request, response, next) => {
       return response.status(400).json({ error: 'Invalid document ID.' });
     }
 
-    const deleted = await deleteDocumentById(request.params.id, request.user.id);
+    const deleted = await withAccountOperationLock(request.user.id, async () => {
+      const document = await findDocumentById(request.params.id, request.user.id);
+      if (!document) {
+        return false;
+      }
+
+      await clearDocumentRequirementReferences(request.user.id, request.params.id);
+      return deleteDocumentById(request.params.id, request.user.id);
+    });
     if (!deleted) {
       return response.status(404).json({ error: 'Document not found.' });
     }

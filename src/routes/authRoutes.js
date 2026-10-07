@@ -5,6 +5,7 @@ const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
 const { deleteDocumentsByOwnerId } = require('../models/documentModel');
+const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
 const {
   createUser,
   deleteUserById,
@@ -132,6 +133,7 @@ async function completeAccountDeletion(userId) {
   }
 
   await deleteDocumentsByOwnerId(userId);
+  await deleteApplicationsByOwnerId(userId);
   return deleteUserById(userId);
 }
 

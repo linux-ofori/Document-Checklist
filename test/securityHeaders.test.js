@@ -11,6 +11,7 @@ process.env.NODE_ENV = 'production';
 process.env.TRUSTED_PROXY_IPS = '127.0.0.1';
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
+process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
 
 const app = require('../src/server');
 let server;

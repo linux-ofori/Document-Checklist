@@ -13,6 +13,7 @@ process.env.NODE_ENV = 'test';
 delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
+process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
 process.env.REGISTRATION_RATE_LIMIT_MAX = '20';
 
 const app = require('../src/server');
@@ -375,6 +376,19 @@ test('authentication, account management, and document API', async (t) => {
   });
 
   await t.test('persists and returns document metadata with independent defaults', async () => {
+    const passportApplication = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    const businessApplication = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'business-registration' }
+    });
+    assert.equal(passportApplication.status, 201);
+    assert.equal(businessApplication.status, 201);
+
     const created = await request('/api/documents', {
       method: 'POST',
       token: primaryToken,
@@ -382,7 +396,7 @@ test('authentication, account management, and document API', async (t) => {
         name: 'Metadata Passport',
         completed: true,
         documentType: 'identity-card',
-        applicationId: 'app-passport-2026',
+        applicationId: passportApplication.payload.application.id,
         expiresAt: '2027-04-05',
         note: 'Stored as plain text: <em>memo</em>'
       }
@@ -393,7 +407,7 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(document.completed, true);
     assert.equal(document.documentType, 'identity-card');
     assert.equal(document.status, 'in-review');
-    assert.equal(document.applicationId, 'app-passport-2026');
+    assert.equal(document.applicationId, passportApplication.payload.application.id);
     assert.equal(document.expiresAt, '2027-04-05T00:00:00.000Z');
     assert.equal(document.note, 'Stored as plain text: <em>memo</em>');
     assert.equal(document.fileName, null);
@@ -417,7 +431,7 @@ test('authentication, account management, and document API', async (t) => {
       { completed: false },
       { documentType: 'other' },
       { status: 'verified' },
-      { applicationId: 'app-business-2026' },
+      { applicationId: businessApplication.payload.application.id },
       { expiresAt: '2028-06-07T13:14:15+02:00' },
       { note: 'Updated note' },
       { name: 'Combined metadata update', note: 'Changed with name' }
@@ -451,7 +465,7 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(updatedDocument.completed, false);
     assert.equal(updatedDocument.documentType, 'other');
     assert.equal(updatedDocument.status, 'verified');
-    assert.equal(updatedDocument.applicationId, 'app-business-2026');
+    assert.equal(updatedDocument.applicationId, businessApplication.payload.application.id);
     assert.equal(updatedDocument.expiresAt, '2028-06-07T11:14:15.000Z');
     assert.equal(updatedDocument.note, 'Changed with name');
 

@@ -33,7 +33,8 @@ function isolatedEnvironment() {
     NODE_ENV: 'test',
     JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
     DOCUMENT_CHECKLIST_USERS_DB_PATH: path.join(temporaryWorkingDirectory, 'users.db'),
-    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(temporaryWorkingDirectory, 'documents.db')
+    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(temporaryWorkingDirectory, 'documents.db'),
+    DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH: path.join(temporaryWorkingDirectory, 'applications.db')
   };
 
   delete environment.TRUSTED_PROXY_IPS;
@@ -76,10 +77,15 @@ function startWithJwtExpiresIn(expiresIn) {
   return startWithEnvironment(environment);
 }
 
-function startWithDatabasePaths(usersDatabasePath, documentsDatabasePath) {
+function startWithDatabasePaths(
+  usersDatabasePath,
+  documentsDatabasePath,
+  applicationsDatabasePath = path.join(temporaryWorkingDirectory, 'applications.db')
+) {
   const environment = isolatedEnvironment();
   environment.DOCUMENT_CHECKLIST_USERS_DB_PATH = usersDatabasePath;
   environment.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = documentsDatabasePath;
+  environment.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = applicationsDatabasePath;
 
   return startWithEnvironment(environment);
 }
@@ -211,4 +217,15 @@ test('rejects users and documents database paths that resolve to the same file',
   assert.match(result.stderr, /The users and documents database paths must be different\./);
   assert.doesNotMatch(result.stderr, /path-check/);
   assert.equal(fs.existsSync(path.join(temporaryWorkingDirectory, 'path-check')), false);
+});
+
+test('rejects application database paths that collide with another database', () => {
+  const usersDatabasePath = path.join(temporaryWorkingDirectory, 'users.db');
+  const documentsDatabasePath = path.join(temporaryWorkingDirectory, 'documents.db');
+  const applicationsDatabasePath = `${path.join(temporaryWorkingDirectory, 'nested')}`
+    + `${path.sep}..${path.sep}users.db`;
+  const result = startWithDatabasePaths(usersDatabasePath, documentsDatabasePath, applicationsDatabasePath);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /The users and applications database paths must be different\./);
 });

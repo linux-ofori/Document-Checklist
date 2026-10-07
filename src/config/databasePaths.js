@@ -17,16 +17,27 @@ const documentsDatabasePath = resolveDatabasePath(
   'DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH',
   'documents.db'
 );
+const applicationsDatabasePath = resolveDatabasePath(
+  'DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH',
+  'applications.db'
+);
 
-const comparableUsersPath = process.platform === 'win32'
-  ? usersDatabasePath.toLowerCase()
-  : usersDatabasePath;
-const comparableDocumentsPath = process.platform === 'win32'
-  ? documentsDatabasePath.toLowerCase()
-  : documentsDatabasePath;
+const databasePaths = [
+  ['users', usersDatabasePath],
+  ['documents', documentsDatabasePath],
+  ['applications', applicationsDatabasePath]
+];
 
-if (comparableUsersPath === comparableDocumentsPath) {
-  throw new Error('The users and documents database paths must be different.');
+for (let index = 0; index < databasePaths.length; index += 1) {
+  const [name, databasePath] = databasePaths[index];
+  const comparablePath = process.platform === 'win32' ? databasePath.toLowerCase() : databasePath;
+
+  for (const [otherName, otherPath] of databasePaths.slice(index + 1)) {
+    const comparableOtherPath = process.platform === 'win32' ? otherPath.toLowerCase() : otherPath;
+    if (comparablePath === comparableOtherPath) {
+      throw new Error(`The ${name} and ${otherName} database paths must be different.`);
+    }
+  }
 }
 
 function prepareDatabaseFile(databaseFile) {
@@ -43,4 +54,9 @@ function prepareDatabaseFile(databaseFile) {
   }
 }
 
-module.exports = { usersDatabasePath, documentsDatabasePath, prepareDatabaseFile };
+module.exports = {
+  usersDatabasePath,
+  documentsDatabasePath,
+  applicationsDatabasePath,
+  prepareDatabaseFile
+};
