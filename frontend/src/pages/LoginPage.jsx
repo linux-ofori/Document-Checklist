@@ -6,6 +6,7 @@ import { GoogleButton } from '../components/marketing/GoogleButton'
 import { Alert, Button, Checkbox, Input } from '../components/ui'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAppData } from '../hooks/useAppData'
+import { useAuth } from '../context/AuthProvider'
 import { request, storeAuthToken } from '../services'
 import { validateLoginForm } from '../utils/validation'
 import { ROUTES } from '../utils/routes'
@@ -14,6 +15,7 @@ const INITIAL_VALUES = { email: '', password: '', remember: true }
 
 export function LoginPage() {
   const { navigate } = useActiveRoute()
+  const { authenticate } = useAuth()
   const { isLoading, showToast } = useAppData()
 
   const [values, setValues] = useState(INITIAL_VALUES)
@@ -58,6 +60,7 @@ export function LoginPage() {
         throw new Error('We could not save your sign-in. Please try again.')
       }
 
+      authenticate(result.user)
       showToast('Welcome back. Loading your checklists.')
       navigate(ROUTES.dashboard)
     } catch (error) {

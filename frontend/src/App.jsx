@@ -1,8 +1,11 @@
+import { useEffect } from 'react'
 import { RouterProvider } from './context/RouterProvider'
+import { AuthProvider, useAuth } from './context/AuthProvider'
 import { AppDataProvider } from './context/AppDataProvider'
 import { ThemeProvider } from './context/ThemeProvider'
 import { useActiveRoute } from './hooks/useActiveRoute'
-import { matchRoute } from './utils/routes'
+import { matchRoute, ROUTES } from './utils/routes'
+import { Alert, LoadingState } from './components/ui'
 import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { SignupPage } from './pages/SignupPage'
@@ -17,6 +20,17 @@ import { SettingsPage } from './pages/SettingsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import './App.css'
 import './components/product/product.css'
+
+const PROTECTED_ROUTE_NAMES = new Set([
+  'dashboard',
+  'applications',
+  'chooseProcess',
+  'application',
+  'documents',
+  'reminders',
+  'profile',
+  'settings',
+])
 
 function renderRoute(route) {
   switch (route.name) {
@@ -48,18 +62,41 @@ function renderRoute(route) {
 }
 
 function AppRoutes() {
-  const { path } = useActiveRoute()
+  const { path, navigate } = useActiveRoute()
+  const { status, error } = useAuth()
+  const route = matchRoute(path)
+  const isProtectedRoute = PROTECTED_ROUTE_NAMES.has(route.name)
 
-  return renderRoute(matchRoute(path))
+  useEffect(() => {
+    if (isProtectedRoute && status === 'unauthenticated') {
+      navigate(ROUTES.login)
+    }
+  }, [isProtectedRoute, navigate, status])
+
+  if (isProtectedRoute && status === 'checking') {
+    return <LoadingState label="Checking your session" />
+  }
+
+  if (isProtectedRoute && status === 'error') {
+    return <Alert tone="danger" title="Unable to verify your session" description={error} />
+  }
+
+  if (isProtectedRoute && status !== 'authenticated') {
+    return <LoadingState label="Redirecting to sign in" />
+  }
+
+  return renderRoute(route)
 }
 
 function App() {
   return (
     <ThemeProvider>
       <RouterProvider>
-        <AppDataProvider>
-          <AppRoutes />
-        </AppDataProvider>
+        <AuthProvider>
+          <AppDataProvider>
+            <AppRoutes />
+          </AppDataProvider>
+        </AuthProvider>
       </RouterProvider>
     </ThemeProvider>
   )

@@ -5,6 +5,7 @@ import { AuthAside, AuthMobileBrand } from '../components/marketing/AuthAside'
 import { Alert, Button, Checkbox, Input } from '../components/ui'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAppData } from '../hooks/useAppData'
+import { useAuth } from '../context/AuthProvider'
 import { request, storeAuthToken } from '../services'
 import { validateSignUpForm, passwordStrength } from '../utils/validation'
 import { ROUTES } from '../utils/routes'
@@ -27,6 +28,7 @@ const RULES = [
 
 export function SignupPage() {
   const { navigate } = useActiveRoute()
+  const { authenticate } = useAuth()
   const { isLoading, showToast } = useAppData()
 
   const [values, setValues] = useState(INITIAL_VALUES)
@@ -79,6 +81,7 @@ export function SignupPage() {
         throw new Error('Your account was created, but we could not save your sign-in. Please log in.')
       }
 
+      authenticate(result.user)
       showToast('Account created. Choose a process to build your first checklist.')
       navigate(ROUTES.chooseProcess)
     } catch (error) {

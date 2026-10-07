@@ -39,6 +39,31 @@ export function storeAuthToken(token) {
   }
 }
 
+export function hasAuthToken() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    return Boolean(window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY))
+  } catch {
+    return false
+  }
+}
+
+export function clearAuthToken() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function request(path, options = {}) {
   const { token: providedToken, headers: requestHeaders, body, ...fetchOptions } = options
   const headers = new Headers(requestHeaders)

@@ -1,4 +1,12 @@
-export { createId, request, resolveAfter, resolvePayload, storeAuthToken } from './client'
+export {
+  clearAuthToken,
+  createId,
+  hasAuthToken,
+  request,
+  resolveAfter,
+  resolvePayload,
+  storeAuthToken,
+} from './client'
 export {
   fetchProcesses,
   fetchProcess,
