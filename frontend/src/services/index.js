@@ -1,4 +1,4 @@
-export { createId, resolveAfter, resolvePayload } from './client'
+export { createId, request, resolveAfter, resolvePayload } from './client'
 export {
   fetchProcesses,
   fetchProcess,
