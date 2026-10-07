@@ -23,6 +23,10 @@ The backend is a Node.js and Express API. User records are stored in the local f
 
 The API listens on `http://localhost:3000` by default. Use `npm run dev` for Node's watch mode.
 
+In production, expose the API only through an HTTPS-terminating reverse proxy and set `NODE_ENV=production` and `TRUSTED_PROXY_IPS` to the proxy's exact IP addresses or narrow CIDRs. The application trusts forwarded protocol information only from those configured addresses and rejects requests that do not arrive as HTTPS through a trusted proxy. Do not use broad proxy ranges or trust arbitrary forwarded headers. Local development does not require HTTPS.
+
+The file-backed NeDB databases are intended for one Node.js process using a private persistent data directory; do not share the same database files between clustered processes or instances. On POSIX systems, newly created database files are restricted to the service owner. On Windows, protect the database directory using the service account's inherited filesystem ACLs.
+
 The Express app applies Helmet security headers before JSON parsing and API routes. Since this backend serves JSON rather than browser pages, Helmet's Content Security Policy header is disabled; a custom CSP is not needed for the API. If browser pages are added to this server later, define a CSP based on their actual scripts, styles, and resources.
 
 ### Run tests

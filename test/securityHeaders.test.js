@@ -7,6 +7,8 @@ const dataDirectory = path.resolve(__dirname, '..', 'data');
 const testDataDirectory = fs.mkdtempSync(path.join(dataDirectory, '.test-security-headers-'));
 
 process.env.JWT_SECRET = 'document-checklist-security-header-test-secret';
+process.env.NODE_ENV = 'production';
+process.env.TRUSTED_PROXY_IPS = '127.0.0.1';
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 
@@ -37,10 +39,15 @@ after(async () => {
   fs.rmSync(cleanupTarget, { recursive: true, force: true });
 });
 
-async function request(route, { method = 'GET', body } = {}) {
+async function request(route, { method = 'GET', body, forwardedProto = 'https' } = {}) {
+  const headers = body === undefined ? {} : { 'content-type': 'application/json' };
+  if (forwardedProto) {
+    headers['x-forwarded-proto'] = forwardedProto;
+  }
+
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   return response;
@@ -63,4 +70,15 @@ test('sets Helmet headers on successful and error API responses', async () => {
   const errorResponse = await request('/api/auth/me');
   assert.equal(errorResponse.status, 401);
   assertSecurityHeaders(errorResponse);
+});
+
+test('requires HTTPS as reported by the explicitly trusted proxy in production', async () => {
+  for (const forwardedProto of ['http', null]) {
+    const response = await request('/api/auth/me', { forwardedProto });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: 'HTTPS is required.' });
+  }
+
+  const secureResponse = await request('/api/auth/me');
+  assert.equal(secureResponse.status, 401);
 });

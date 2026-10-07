@@ -3,11 +3,15 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
+const withAccountOperationLock = require('../models/accountOperationLock');
 const { deleteDocumentsByOwnerId } = require('../models/documentModel');
 const {
   createUser,
   deleteUserById,
   findUserByEmail,
+  findUserById,
+  findUsersPendingDeletion,
+  markUserDeletingById,
   updateUserById,
   toPublicUser
 } = require('../models/userModel');
@@ -16,8 +20,17 @@ const router = express.Router();
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function positiveIntegerEnvironmentValue(name, defaultValue) {
-  const value = Number(process.env[name]);
-  return Number.isSafeInteger(value) && value > 0 ? value : defaultValue;
+  const configuredValue = process.env[name];
+  if (configuredValue === undefined) {
+    return defaultValue;
+  }
+
+  const value = Number(configuredValue);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a safe positive integer.`);
+  }
+
+  return value;
 }
 
 const loginRateLimit = rateLimit({
@@ -108,6 +121,27 @@ function createToken(user) {
   });
 }
 
+async function completeAccountDeletion(userId) {
+  const user = await findUserById(userId);
+  if (!user) {
+    return false;
+  }
+
+  if (!user.deleting && !await markUserDeletingById(userId)) {
+    return false;
+  }
+
+  await deleteDocumentsByOwnerId(userId);
+  return deleteUserById(userId);
+}
+
+async function recoverPendingAccountDeletions() {
+  const pendingUsers = await findUsersPendingDeletion();
+  for (const user of pendingUsers) {
+    await withAccountOperationLock(user._id, () => completeAccountDeletion(user._id));
+  }
+}
+
 router.post('/register', registrationRateLimit, async (request, response, next) => {
   try {
     const credentials = validateCredentials(request.body || {}, true);
@@ -149,7 +183,8 @@ router.post('/login', loginRateLimit, async (request, response, next) => {
     }
 
     const user = await findUserByEmail(credentials.email);
-    const passwordMatches = user && await bcrypt.compare(credentials.password, user.password);
+    const passwordMatches = user && !user.deleting
+      && await bcrypt.compare(credentials.password, user.password);
 
     if (!passwordMatches) {
       return response.status(401).json({ error: 'Invalid email or password.' });
@@ -198,10 +233,12 @@ router.put('/me', requireAuth, async (request, response, next) => {
   }
 });
 
-router.delete('/me', requireAuth, async (request, response, next) => {
+router.delete('/me', requireAuth.allowDeletingAccount, async (request, response, next) => {
   try {
-    await deleteDocumentsByOwnerId(request.user.id);
-    const deleted = await deleteUserById(request.user.id);
+    const deleted = await withAccountOperationLock(
+      request.user.id,
+      () => completeAccountDeletion(request.user.id)
+    );
     if (!deleted) {
       return response.status(404).json({ error: 'The authenticated user no longer exists.' });
     }
@@ -213,3 +250,4 @@ router.delete('/me', requireAuth, async (request, response, next) => {
 });
 
 module.exports = router;
+module.exports.recoverPendingAccountDeletions = recoverPendingAccountDeletions;

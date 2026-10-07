@@ -9,14 +9,18 @@ const testJwtSecret = 'document-checklist-automated-test-secret';
 const passwordAtBcryptLimit = 'a'.repeat(72);
 
 process.env.JWT_SECRET = testJwtSecret;
+process.env.NODE_ENV = 'test';
+delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.REGISTRATION_RATE_LIMIT_MAX = '20';
 
 const app = require('../src/server');
 const database = require('../src/config/database');
+const documentsDatabase = require('../src/config/documentsDatabase');
+const authRoutes = require('../src/routes/authRoutes');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
-const { toPublicUser } = require('../src/models/userModel');
+const { findUserById, markUserDeletingById, toPublicUser } = require('../src/models/userModel');
 let server;
 let baseUrl;
 
@@ -86,6 +90,7 @@ test('public user serialization allows only intended user fields', () => {
     email: 'public@example.com',
     createdAt: '2026-10-06T00:00:00.000Z',
     updatedAt: '2026-10-06T00:00:00.000Z',
+    deleting: true,
     password: 'stored-password',
     passwordHash: 'stored-hash',
     internalSecret: 'must-not-be-returned'
@@ -100,6 +105,7 @@ test('public user serialization allows only intended user fields', () => {
   });
   assert.equal(Object.hasOwn(publicUser, 'password'), false);
   assert.equal(Object.hasOwn(publicUser, 'passwordHash'), false);
+  assert.equal(Object.hasOwn(publicUser, 'deleting'), false);
   assert.equal(Object.hasOwn(publicUser, 'internalSecret'), false);
 });
 
@@ -283,6 +289,31 @@ test('authentication, account management, and document API', async (t) => {
     assert.deepEqual(oversizedRegistration.payload, { error: 'Request body is too large.' });
   });
 
+  await t.test('maps malformed JSON and unsupported JSON encodings to client errors', async () => {
+    const malformed = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ invalid'
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), {
+      error: 'Request body must contain valid JSON.'
+    });
+
+    for (const [headers, body] of [
+      [{ 'content-type': 'application/json; charset=x-unknown-charset' }, '{}'],
+      [{ 'content-type': 'application/json', 'content-encoding': 'x-unknown-encoding' }, '{}']
+    ]) {
+      const unsupported = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers,
+        body
+      });
+      assert.equal(unsupported.status, 415);
+      assert.deepEqual(await unsupported.json(), { error: 'Unsupported request encoding.' });
+    }
+  });
+
   await t.test('never returns passwords or hashes and supports profile routes', async () => {
     const profile = await request('/api/auth/me', { token: primaryToken });
     assert.equal(profile.status, 200);
@@ -322,6 +353,133 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(deleted.status, 200);
     assert.equal(deleted.payload.message, 'Account deleted successfully.');
     assert.deepEqual(await findDocumentsByOwnerId(account.payload.user.id), []);
+    assert.equal(await findUserById(account.payload.user.id), null);
     assert.equal((await request('/api/auth/me', { token: account.payload.token })).status, 401);
+  });
+
+  await t.test('resumes a failed deletion and rejects writes after deletion begins', async () => {
+    const account = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Retry Delete', email: 'retry-delete@example.com', password: 'retry-delete-pass' }
+    });
+    const accountId = account.payload.user.id;
+    const document = await request('/api/documents', {
+      method: 'POST', token: account.payload.token, body: { name: 'Pending cleanup' }
+    });
+    assert.equal(document.status, 201);
+
+    const originalRemove = database.remove;
+    const originalConsoleError = console.error;
+    let failFirstUserRemoval = true;
+    database.remove = function remove(query, options, callback) {
+      if (query._id === accountId && failFirstUserRemoval) {
+        failFirstUserRemoval = false;
+        return callback(new Error('Injected document cleanup failure.'));
+      }
+
+      return originalRemove.call(this, query, options, callback);
+    };
+    console.error = () => {};
+
+    try {
+      const failedDeletion = await request('/api/auth/me', {
+        method: 'DELETE', token: account.payload.token
+      });
+      assert.equal(failedDeletion.status, 500);
+      assert.deepEqual(await findDocumentsByOwnerId(accountId), []);
+
+      const deniedWrite = await request('/api/documents', {
+        method: 'POST', token: account.payload.token, body: { name: 'Must not become orphaned' }
+      });
+      assert.equal(deniedWrite.status, 401);
+
+      const retriedDeletion = await request('/api/auth/me', {
+        method: 'DELETE', token: account.payload.token
+      });
+      assert.equal(retriedDeletion.status, 200);
+    } finally {
+      database.remove = originalRemove;
+      console.error = originalConsoleError;
+    }
+
+    assert.deepEqual(await findDocumentsByOwnerId(accountId), []);
+    assert.equal(await findUserById(accountId), null);
+  });
+
+  await t.test('recovers a deletion interrupted after its marker was persisted', async () => {
+    const account = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Recover Delete', email: 'recover-delete@example.com', password: 'recover-delete-pass' }
+    });
+    const accountId = account.payload.user.id;
+    const document = await request('/api/documents', {
+      method: 'POST', token: account.payload.token, body: { name: 'Recover on startup' }
+    });
+    assert.equal(document.status, 201);
+
+    assert.ok(await markUserDeletingById(accountId));
+    await authRoutes.recoverPendingAccountDeletions();
+
+    assert.deepEqual(await findDocumentsByOwnerId(accountId), []);
+    assert.equal(await findUserById(accountId), null);
+  });
+
+  await t.test('serializes in-flight document creation before account deletion', async () => {
+    const account = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Racing User', email: 'racing-user@example.com', password: 'racing-user-pass' }
+    });
+    const accountId = account.payload.user.id;
+    const originalInsert = documentsDatabase.insert;
+    const originalFindOne = database.findOne;
+    let insertStartedResolve;
+    let deletionAuthResolve;
+    let releaseInsertResolve;
+    const insertStarted = new Promise((resolve) => { insertStartedResolve = resolve; });
+    const deletionAuthReached = new Promise((resolve) => { deletionAuthResolve = resolve; });
+    const releaseInsert = new Promise((resolve) => { releaseInsertResolve = resolve; });
+    let ownerLookups = 0;
+
+    documentsDatabase.insert = function insert(document, callback) {
+      return originalInsert.call(this, document, (error, inserted) => {
+        insertStartedResolve();
+        releaseInsert.then(() => callback(error, inserted));
+      });
+    };
+    database.findOne = function findOne(query, callback) {
+      return originalFindOne.call(this, query, (error, user) => {
+        callback(error, user);
+        if (query._id === accountId) {
+          ownerLookups += 1;
+          if (ownerLookups === 3) {
+            deletionAuthResolve();
+          }
+        }
+      });
+    };
+
+    try {
+      const creating = request('/api/documents', {
+        method: 'POST', token: account.payload.token, body: { name: 'Created during deletion race' }
+      });
+      await insertStarted;
+
+      const deleting = request('/api/auth/me', {
+        method: 'DELETE', token: account.payload.token
+      });
+      await deletionAuthReached;
+      releaseInsertResolve();
+
+      const [created, deleted] = await Promise.all([creating, deleting]);
+      assert.equal(created.status, 201);
+      assert.equal(deleted.status, 200);
+    } finally {
+      documentsDatabase.insert = originalInsert;
+      database.findOne = originalFindOne;
+      releaseInsertResolve();
+    }
+
+    assert.deepEqual(await findDocumentsByOwnerId(accountId), []);
+    assert.equal(await findUserById(accountId), null);
   });
 });

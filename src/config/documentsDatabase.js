@@ -1,9 +1,7 @@
-const fs = require('node:fs');
-const path = require('node:path');
 const Datastore = require('@seald-io/nedb');
-const { documentsDatabasePath: databaseFile } = require('./databasePaths');
+const { documentsDatabasePath: databaseFile, prepareDatabaseFile } = require('./databasePaths');
 
-fs.mkdirSync(path.dirname(databaseFile), { recursive: true });
+prepareDatabaseFile(databaseFile);
 
 const database = new Datastore({
   filename: databaseFile,

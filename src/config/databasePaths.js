@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const path = require('node:path');
 
 const dataDirectory = path.join(__dirname, '..', '..', 'data');
@@ -28,4 +29,18 @@ if (comparableUsersPath === comparableDocumentsPath) {
   throw new Error('The users and documents database paths must be different.');
 }
 
-module.exports = { usersDatabasePath, documentsDatabasePath };
+function prepareDatabaseFile(databaseFile) {
+  const directory = path.dirname(databaseFile);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+
+  const fileDescriptor = process.platform === 'win32'
+    ? fs.openSync(databaseFile, 'a')
+    : fs.openSync(databaseFile, 'a', 0o600);
+  fs.closeSync(fileDescriptor);
+
+  if (process.platform !== 'win32') {
+    fs.chmodSync(databaseFile, 0o600);
+  }
+}
+
+module.exports = { usersDatabasePath, documentsDatabasePath, prepareDatabaseFile };

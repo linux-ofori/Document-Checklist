@@ -4,12 +4,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { after, test } = require('node:test');
+const { prepareDatabaseFile } = require('../src/config/databasePaths');
 
 const temporaryWorkingDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), 'document-checklist-config-test-')
 );
 const temporaryDirectoryParent = path.resolve(os.tmpdir());
 const serverPath = path.resolve(__dirname, '..', 'src', 'server.js');
+const rateLimitEnvironmentVariables = [
+  'LOGIN_RATE_LIMIT_MAX',
+  'LOGIN_RATE_LIMIT_WINDOW_MS',
+  'REGISTRATION_RATE_LIMIT_MAX',
+  'REGISTRATION_RATE_LIMIT_WINDOW_MS'
+];
 
 after(() => {
   const cleanupTarget = path.resolve(temporaryWorkingDirectory);
@@ -20,14 +27,25 @@ after(() => {
   fs.rmSync(cleanupTarget, { recursive: true, force: true });
 });
 
-function startWithJwtSecret(secret) {
-  const environment = { ...process.env };
-  if (secret === undefined) {
-    delete environment.JWT_SECRET;
-  } else {
-    environment.JWT_SECRET = secret;
+function isolatedEnvironment() {
+  const environment = {
+    ...process.env,
+    NODE_ENV: 'test',
+    JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
+    DOCUMENT_CHECKLIST_USERS_DB_PATH: path.join(temporaryWorkingDirectory, 'users.db'),
+    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(temporaryWorkingDirectory, 'documents.db')
+  };
+
+  delete environment.TRUSTED_PROXY_IPS;
+  delete environment.JWT_EXPIRES_IN;
+  for (const variable of rateLimitEnvironmentVariables) {
+    delete environment[variable];
   }
 
+  return environment;
+}
+
+function startWithEnvironment(environment) {
   return spawnSync(process.execPath, ['-e', `require(${JSON.stringify(serverPath)})`], {
     cwd: temporaryWorkingDirectory,
     env: environment,
@@ -35,13 +53,19 @@ function startWithJwtSecret(secret) {
   });
 }
 
+function startWithJwtSecret(secret) {
+  const environment = isolatedEnvironment();
+  if (secret === undefined) {
+    delete environment.JWT_SECRET;
+  } else {
+    environment.JWT_SECRET = secret;
+  }
+
+  return startWithEnvironment(environment);
+}
+
 function startWithJwtExpiresIn(expiresIn) {
-  const environment = {
-    ...process.env,
-    JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
-    DOCUMENT_CHECKLIST_USERS_DB_PATH: path.join(temporaryWorkingDirectory, 'jwt-expires-users.db'),
-    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(temporaryWorkingDirectory, 'jwt-expires-documents.db')
-  };
+  const environment = isolatedEnvironment();
 
   if (expiresIn === undefined) {
     delete environment.JWT_EXPIRES_IN;
@@ -49,26 +73,15 @@ function startWithJwtExpiresIn(expiresIn) {
     environment.JWT_EXPIRES_IN = expiresIn;
   }
 
-  return spawnSync(process.execPath, ['-e', `require(${JSON.stringify(serverPath)})`], {
-    cwd: temporaryWorkingDirectory,
-    env: environment,
-    encoding: 'utf8'
-  });
+  return startWithEnvironment(environment);
 }
 
 function startWithDatabasePaths(usersDatabasePath, documentsDatabasePath) {
-  const environment = {
-    ...process.env,
-    JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
-    DOCUMENT_CHECKLIST_USERS_DB_PATH: usersDatabasePath,
-    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: documentsDatabasePath
-  };
+  const environment = isolatedEnvironment();
+  environment.DOCUMENT_CHECKLIST_USERS_DB_PATH = usersDatabasePath;
+  environment.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = documentsDatabasePath;
 
-  return spawnSync(process.execPath, ['-e', `require(${JSON.stringify(serverPath)})`], {
-    cwd: temporaryWorkingDirectory,
-    env: environment,
-    encoding: 'utf8'
-  });
+  return startWithEnvironment(environment);
 }
 
 test('fails startup when the JWT secret is missing, empty, whitespace-only, or too short', () => {
@@ -87,23 +100,104 @@ test('fails startup when the JWT secret is missing, empty, whitespace-only, or t
   }
 });
 
+test('rejects the published JWT secret placeholder and accepts a valid 32-character secret', () => {
+  const placeholder = startWithJwtSecret('replace-this-with-a-random-secret-at-least-32-characters');
+  assert.notEqual(placeholder.status, 0);
+  assert.match(placeholder.stderr, /JWT_SECRET must not use the published example placeholder\./);
+
+  const validSecret = startWithJwtSecret('0123456789abcdef0123456789abcdef');
+  assert.equal(validSecret.status, 0, validSecret.stderr);
+});
+
 test('fails startup when JWT_EXPIRES_IN is invalid', () => {
   const result = startWithJwtExpiresIn('not-a-duration');
 
   assert.notEqual(result.status, 0);
   assert.match(
     result.stderr,
-    /JWT_EXPIRES_IN must be a valid expiration value supported by jsonwebtoken\./
+    /JWT_EXPIRES_IN must be a valid expiration value that produces a positive lifetime\./
   );
 });
 
 test('accepts the default and a valid configured JWT_EXPIRES_IN', () => {
   for (const [description, expiresIn] of [
     ['default when unset', undefined],
-    ['configured 1d', '1d']
+    ['configured 1d', '1d'],
+    ['configured seconds', '3600s']
   ]) {
     const result = startWithJwtExpiresIn(expiresIn);
     assert.equal(result.status, 0, `${description} should allow startup: ${result.stderr}`);
+  }
+});
+
+test('rejects zero and immediately-expired JWT_EXPIRES_IN values', () => {
+  for (const expiresIn of ['0', '0s', '1ms']) {
+    const result = startWithJwtExpiresIn(expiresIn);
+    assert.notEqual(result.status, 0, `${expiresIn} should fail startup`);
+    assert.match(
+      result.stderr,
+      /JWT_EXPIRES_IN must be a valid expiration value that produces a positive lifetime\./
+    );
+  }
+});
+
+test('uses rate-limit defaults when unset and accepts positive safe integer overrides', () => {
+  const defaults = startWithEnvironment(isolatedEnvironment());
+  assert.equal(defaults.status, 0, defaults.stderr);
+
+  const environment = isolatedEnvironment();
+  Object.assign(environment, {
+    LOGIN_RATE_LIMIT_MAX: '8',
+    LOGIN_RATE_LIMIT_WINDOW_MS: '60000',
+    REGISTRATION_RATE_LIMIT_MAX: '3',
+    REGISTRATION_RATE_LIMIT_WINDOW_MS: '120000'
+  });
+  const configured = startWithEnvironment(environment);
+  assert.equal(configured.status, 0, configured.stderr);
+});
+
+test('fails startup for invalid login and registration rate-limit values', () => {
+  for (const variable of rateLimitEnvironmentVariables) {
+    for (const value of ['0', '-1', '1.5', 'not-a-number', 'Infinity', '9007199254740992']) {
+      const environment = isolatedEnvironment();
+      environment[variable] = value;
+      const result = startWithEnvironment(environment);
+
+      assert.notEqual(result.status, 0, `${variable}=${value} should fail startup`);
+      assert.match(result.stderr, new RegExp(`${variable} must be a safe positive integer\\.`));
+    }
+  }
+});
+
+test('requires explicit trusted proxy addresses in production', () => {
+  const missingProxy = isolatedEnvironment();
+  missingProxy.NODE_ENV = 'production';
+  const missingResult = startWithEnvironment(missingProxy);
+  assert.notEqual(missingResult.status, 0);
+  assert.match(missingResult.stderr, /TRUSTED_PROXY_IPS must identify the HTTPS-terminating proxy/);
+
+  const broadProxy = isolatedEnvironment();
+  broadProxy.NODE_ENV = 'production';
+  broadProxy.TRUSTED_PROXY_IPS = '0.0.0.0/0';
+  const broadResult = startWithEnvironment(broadProxy);
+  assert.notEqual(broadResult.status, 0);
+  assert.match(broadResult.stderr, /TRUSTED_PROXY_IPS must contain only valid IP addresses or CIDRs\./);
+
+  const trustedProxy = isolatedEnvironment();
+  trustedProxy.NODE_ENV = 'production';
+  trustedProxy.TRUSTED_PROXY_IPS = '127.0.0.1,::1/128';
+  const trustedResult = startWithEnvironment(trustedProxy);
+  assert.equal(trustedResult.status, 0, trustedResult.stderr);
+});
+
+test('creates private database files and new directories', () => {
+  const databaseFile = path.join(temporaryWorkingDirectory, 'private-data', 'users.db');
+  prepareDatabaseFile(databaseFile);
+
+  assert.equal(fs.existsSync(databaseFile), true);
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(path.dirname(databaseFile)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(databaseFile).mode & 0o777, 0o600);
   }
 });
 

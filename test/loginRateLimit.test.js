@@ -7,6 +7,8 @@ const dataDirectory = path.resolve(__dirname, '..', 'data');
 const testDataDirectory = fs.mkdtempSync(path.join(dataDirectory, '.test-rate-limit-'));
 
 process.env.JWT_SECRET = 'document-checklist-rate-limit-test-secret';
+process.env.NODE_ENV = 'test';
+delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.LOGIN_RATE_LIMIT_WINDOW_MS = '900000';

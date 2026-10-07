@@ -1,5 +1,7 @@
 const express = require('express');
 const requireAuth = require('../middleware/authMiddleware');
+const withAccountOperationLock = require('../models/accountOperationLock');
+const { findUserById } = require('../models/userModel');
 const {
   createDocument,
   deleteDocumentById,
@@ -69,11 +71,22 @@ router.post('/', async (request, response, next) => {
       return response.status(400).json({ error: 'Validation failed.', details: input.errors });
     }
 
-    const document = await createDocument({
-      ownerId: request.user.id,
-      name: input.updates.name,
-      completed: input.updates.completed === undefined ? false : input.updates.completed
+    const document = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return null;
+      }
+
+      return createDocument({
+        ownerId: request.user.id,
+        name: input.updates.name,
+        completed: input.updates.completed === undefined ? false : input.updates.completed
+      });
     });
+
+    if (!document) {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
 
     return response.status(201).json({ document: toPublicDocument(document) });
   } catch (error) {
