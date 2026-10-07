@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const dataDirectory = path.resolve(__dirname, '..', 'data');
 const testDataDirectory = fs.mkdtempSync(path.join(dataDirectory, '.test-'));
@@ -16,7 +18,9 @@ process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'use
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
 process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY = path.join(testDataDirectory, 'uploads');
-process.env.REGISTRATION_RATE_LIMIT_MAX = '20';
+process.env.LOGIN_RATE_LIMIT_MAX = '30';
+process.env.PASSWORD_CHANGE_RATE_LIMIT_MAX = '30';
+process.env.REGISTRATION_RATE_LIMIT_MAX = '50';
 
 const app = require('../src/server');
 const database = require('../src/config/database');
@@ -181,6 +185,8 @@ test('returns JSON 404 responses for unknown API paths and unsupported methods',
 function assertSanitizedUser(user) {
   assert.equal(Object.hasOwn(user, 'password'), false);
   assert.equal(Object.hasOwn(user, 'passwordHash'), false);
+  assert.equal(Object.hasOwn(user, 'tokenVersion'), false);
+  assert.equal(Object.hasOwn(user, 'deleting'), false);
 }
 
 test('public user serialization allows only intended user fields', () => {
@@ -200,6 +206,14 @@ test('public user serialization allows only intended user fields', () => {
     id: 'user-id',
     name: 'Public User',
     email: 'public@example.com',
+    phone: null,
+    preferences: {
+      notifications: {
+        documentExpiry: true,
+        applicationUpdates: true,
+        securityAccount: true
+      }
+    },
     createdAt: '2026-10-06T00:00:00.000Z',
     updatedAt: '2026-10-06T00:00:00.000Z'
   });
@@ -207,6 +221,89 @@ test('public user serialization allows only intended user fields', () => {
   assert.equal(Object.hasOwn(publicUser, 'passwordHash'), false);
   assert.equal(Object.hasOwn(publicUser, 'deleting'), false);
   assert.equal(Object.hasOwn(publicUser, 'internalSecret'), false);
+  assert.equal(Object.hasOwn(publicUser, 'tokenVersion'), false);
+});
+
+function insertLegacyUser(user) {
+  return new Promise((resolve, reject) => {
+    database.insert(user, (error, inserted) => error ? reject(error) : resolve(inserted));
+  });
+}
+
+test('legacy users and version-zero tokens receive defaults and remain authenticated', async () => {
+  const passwordHash = await bcrypt.hash('legacy-account-password', 12);
+  const legacyUser = await insertLegacyUser({
+    name: 'Legacy Account',
+    email: 'legacy-account@example.com',
+    password: passwordHash,
+    createdAt: '2025-01-01T00:00:00.000Z',
+    updatedAt: '2025-01-01T00:00:00.000Z'
+  });
+  const legacyToken = jwt.sign({}, testJwtSecret, {
+    subject: legacyUser._id,
+    expiresIn: '1d'
+  });
+
+  const response = await request('/api/auth/me', { token: legacyToken });
+  assert.equal(response.status, 200);
+  assert.equal(response.payload.user.phone, null);
+  assert.deepEqual(response.payload.user.preferences, {
+    notifications: {
+      documentExpiry: true,
+      applicationUpdates: true,
+      securityAccount: true
+    }
+  });
+  assertSanitizedUser(response.payload.user);
+
+  const updatedLegacyProfile = await request('/api/auth/me', {
+    method: 'PUT',
+    token: legacyToken,
+    body: {
+      phone: ' +1 555 0100 ',
+      preferences: { notifications: { documentExpiry: false } }
+    }
+  });
+  assert.equal(updatedLegacyProfile.status, 200);
+  assert.equal(updatedLegacyProfile.payload.user.phone, '+1 555 0100');
+  assert.deepEqual(updatedLegacyProfile.payload.user.preferences, {
+    notifications: {
+      documentExpiry: false,
+      applicationUpdates: true,
+      securityAccount: true
+    }
+  });
+
+  for (const tokenVersion of ['0', -1, 1]) {
+    const malformedToken = jwt.sign({ tokenVersion }, testJwtSecret, {
+      subject: legacyUser._id,
+      expiresIn: '1d'
+    });
+    assert.equal((await request('/api/auth/me', { token: malformedToken })).status, 401);
+  }
+
+  const changedPassword = await request('/api/auth/change-password', {
+    method: 'POST',
+    token: legacyToken,
+    body: {
+      currentPassword: 'legacy-account-password',
+      newPassword: 'legacy-account-password-updated'
+    }
+  });
+  assert.equal(changedPassword.status, 200);
+  assert.equal((await request('/api/auth/me', { token: legacyToken })).status, 401);
+  assert.equal((await request('/api/auth/me', { token: changedPassword.payload.token })).status, 200);
+
+  const oldPasswordLogin = await request('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'legacy-account@example.com', password: 'legacy-account-password' }
+  });
+  assert.equal(oldPasswordLogin.status, 401);
+  const newPasswordLogin = await request('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'legacy-account@example.com', password: 'legacy-account-password-updated' }
+  });
+  assert.equal(newPasswordLogin.status, 200);
 });
 
 test('authentication, account management, and document API', async (t) => {
@@ -220,6 +317,14 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(Buffer.byteLength(passwordAtBcryptLimit, 'utf8'), 72);
     assert.equal(registration.status, 201);
     assertSanitizedUser(registration.payload.user);
+    assert.equal(registration.payload.user.phone, null);
+    assert.deepEqual(registration.payload.user.preferences, {
+      notifications: {
+        documentExpiry: true,
+        applicationUpdates: true,
+        securityAccount: true
+      }
+    });
 
     const duplicate = await request('/api/auth/register', {
       method: 'POST',
@@ -792,13 +897,166 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(updatedProfile.payload.user.name, 'Renamed User');
     assertSanitizedUser(updatedProfile.payload.user);
 
+    const profileUpdate = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: {
+        email: ' RENAMED@example.com ',
+        phone: '  +233 24 123 4567  ',
+        preferences: { notifications: { documentExpiry: false } }
+      }
+    });
+    assert.equal(profileUpdate.status, 200);
+    assert.equal(profileUpdate.payload.user.email, 'renamed@example.com');
+    assert.equal(profileUpdate.payload.user.phone, '+233 24 123 4567');
+    assert.deepEqual(profileUpdate.payload.user.preferences, {
+      notifications: {
+        documentExpiry: false,
+        applicationUpdates: true,
+        securityAccount: true
+      }
+    });
+    assertSanitizedUser(profileUpdate.payload.user);
+
+    const partialPreferenceUpdate = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: {
+        phone: '  ',
+        preferences: { notifications: { applicationUpdates: false } }
+      }
+    });
+    assert.equal(partialPreferenceUpdate.status, 200);
+    assert.equal(partialPreferenceUpdate.payload.user.phone, null);
+    assert.deepEqual(partialPreferenceUpdate.payload.user.preferences, {
+      notifications: {
+        documentExpiry: false,
+        applicationUpdates: false,
+        securityAccount: true
+      }
+    });
+
+    for (const body of [
+      { phone: 123 },
+      { phone: 'p'.repeat(41) },
+      { unsupported: true },
+      { tokenVersion: 1 },
+      { preferences: { unknown: true } },
+      { preferences: { notifications: { unknown: true } } },
+      { preferences: { notifications: { documentExpiry: 'false' } } },
+      { preferences: { notifications: { securityAccount: false } } }
+    ]) {
+      const invalid = await request('/api/auth/me', { method: 'PUT', token: primaryToken, body });
+      assert.equal(invalid.status, 400, JSON.stringify(body));
+    }
+
+    const unchangedProfile = await request('/api/auth/me', { token: primaryToken });
+    assert.equal(unchangedProfile.status, 200);
+    assert.equal(unchangedProfile.payload.user.phone, null);
+    assert.deepEqual(unchangedProfile.payload.user.preferences, {
+      notifications: {
+        documentExpiry: false,
+        applicationUpdates: false,
+        securityAccount: true
+      }
+    });
+    const otherProfileAccount = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Isolated Profile User',
+        email: 'isolated-profile@example.com',
+        password: 'isolated-profile-password'
+      }
+    });
+    assert.equal(otherProfileAccount.status, 201);
+    const otherUserProfile = await request('/api/auth/me', { token: otherProfileAccount.payload.token });
+    assert.equal(otherUserProfile.status, 200);
+    assert.equal(otherUserProfile.payload.user.phone, null);
+    assert.deepEqual(otherUserProfile.payload.user.preferences.notifications, {
+      documentExpiry: true,
+      applicationUpdates: true,
+      securityAccount: true
+    });
+
+    const conflictingEmail = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { email: 'legacy-account@example.com' }
+    });
+    assert.equal(conflictingEmail.status, 409);
+
     assertSanitizedUser(registration.payload.user);
     const login = await request('/api/auth/login', {
       method: 'POST',
-      body: { email: 'primary@example.com', password: passwordAtBcryptLimit }
+      body: { email: 'renamed@example.com', password: passwordAtBcryptLimit }
     });
     assert.equal(login.status, 200);
     assertSanitizedUser(login.payload.user);
+  });
+
+  await t.test('changes password atomically and invalidates the previous token', async () => {
+    const account = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Password Change User', email: 'password-change@example.com', password: 'initial-password-1' }
+    });
+    assert.equal(account.status, 201);
+
+    for (const newPassword of ['short', 'a'.repeat(129), 'é'.repeat(37)]) {
+      const invalidNewPassword = await request('/api/auth/change-password', {
+        method: 'POST',
+        token: account.payload.token,
+        body: { currentPassword: 'initial-password-1', newPassword }
+      });
+      assert.equal(invalidNewPassword.status, 400);
+    }
+
+    const incorrectCurrentPassword = await request('/api/auth/change-password', {
+      method: 'POST',
+      token: account.payload.token,
+      body: { currentPassword: 'incorrect-password', newPassword: 'replacement-password-2' }
+    });
+    assert.equal(incorrectCurrentPassword.status, 401);
+    assert.deepEqual(incorrectCurrentPassword.payload, {
+      error: 'Current password is incorrect or account is unavailable.'
+    });
+    assert.equal((await request('/api/auth/me', { token: account.payload.token })).status, 200);
+
+    const changed = await request('/api/auth/change-password', {
+      method: 'POST',
+      token: account.payload.token,
+      body: {
+        currentPassword: 'initial-password-1',
+        newPassword: 'replacement-password-2',
+        tokenVersion: 100
+      }
+    });
+    assert.equal(changed.status, 400);
+
+    const success = await request('/api/auth/change-password', {
+      method: 'POST',
+      token: account.payload.token,
+      body: {
+        currentPassword: 'initial-password-1',
+        newPassword: 'replacement-password-2'
+      }
+    });
+    assert.equal(success.status, 200);
+    assertSanitizedUser(success.payload.user);
+    assert.equal(Object.hasOwn(success.payload, 'password'), false);
+    assert.equal(Object.hasOwn(success.payload, 'passwordHash'), false);
+    assert.equal((await request('/api/auth/me', { token: account.payload.token })).status, 401);
+    assert.equal((await request('/api/auth/me', { token: success.payload.token })).status, 200);
+
+    const oldPasswordLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'password-change@example.com', password: 'initial-password-1' }
+    });
+    assert.equal(oldPasswordLogin.status, 401);
+    const newPasswordLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'password-change@example.com', password: 'replacement-password-2' }
+    });
+    assert.equal(newPasswordLogin.status, 200);
   });
 
   await t.test('deletes an account and invalidates its token', async () => {

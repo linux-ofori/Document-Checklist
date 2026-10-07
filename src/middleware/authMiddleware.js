@@ -17,6 +17,13 @@ function createRequireAuth(allowDeletingAccount) {
       return response.status(401).json({ error: 'The token is invalid or expired.' });
     }
 
+    const tokenVersion = payload && typeof payload === 'object'
+      ? (payload.tokenVersion === undefined ? 0 : payload.tokenVersion)
+      : null;
+    if (!Number.isSafeInteger(tokenVersion) || tokenVersion < 0) {
+      return response.status(401).json({ error: 'The token is invalid or expired.' });
+    }
+
     let user;
     try {
       user = await findUserById(payload.sub);
@@ -26,6 +33,13 @@ function createRequireAuth(allowDeletingAccount) {
 
     if (!user || (user.deleting && !allowDeletingAccount)) {
       return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
+
+    const currentTokenVersion = user.tokenVersion === undefined ? 0 : user.tokenVersion;
+    if (!Number.isSafeInteger(currentTokenVersion)
+        || currentTokenVersion < 0
+        || tokenVersion !== currentTokenVersion) {
+      return response.status(401).json({ error: 'The token is invalid or expired.' });
     }
 
     request.user = toPublicUser(user);

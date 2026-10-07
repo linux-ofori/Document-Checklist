@@ -9,6 +9,7 @@ const { deleteDocumentsByOwnerId, findDocumentsByOwnerId } = require('../models/
 const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
 const {
   createUser,
+  changeUserPasswordById,
   deleteUserById,
   findUserByEmail,
   findUserById,
@@ -55,6 +56,16 @@ const registrationRateLimit = rateLimit({
   })
 });
 
+const passwordChangeRateLimit = rateLimit({
+  windowMs: positiveIntegerEnvironmentValue('PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000),
+  limit: positiveIntegerEnvironmentValue('PASSWORD_CHANGE_RATE_LIMIT_MAX', 5),
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_request, response) => response.status(429).json({
+    error: 'Too many password change attempts. Please try again later.'
+  })
+});
+
 function validateCredentials(body, isRegistration) {
   const errors = [];
   const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -80,13 +91,18 @@ function validateCredentials(body, isRegistration) {
   return { errors, name, email, password };
 }
 
-function validateProfileUpdates(body) {
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateProfileUpdates(body, currentPreferences) {
   const errors = [];
   const updates = {};
-  const allowedFields = ['name', 'email'];
+  const allowedFields = ['name', 'email', 'phone', 'preferences'];
 
-  if (Object.keys(body).length === 0) {
+  if (!isPlainObject(body) || Object.keys(body).length === 0) {
     errors.push('At least one profile field must be provided.');
+    return { errors, updates };
   }
 
   for (const field of Object.keys(body)) {
@@ -113,14 +129,107 @@ function validateProfileUpdates(body) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
+    if (body.phone === null) {
+      updates.phone = null;
+    } else if (typeof body.phone !== 'string') {
+      errors.push('Phone must be a string or null.');
+    } else {
+      const phone = body.phone.trim();
+      if (phone.length > 40) {
+        errors.push('Phone must not exceed 40 characters.');
+      } else {
+        updates.phone = phone || null;
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'preferences')) {
+    const preferences = body.preferences;
+    if (!isPlainObject(preferences)) {
+      errors.push('Preferences must be an object.');
+    } else {
+      for (const field of Object.keys(preferences)) {
+        if (field !== 'notifications') {
+          errors.push(`The preferences.${field} field cannot be updated.`);
+        }
+      }
+
+      if (!Object.prototype.hasOwnProperty.call(preferences, 'notifications')) {
+        errors.push('At least one notification preference must be provided.');
+      } else if (!isPlainObject(preferences.notifications)) {
+        errors.push('Notification preferences must be an object.');
+      } else {
+        const notificationUpdates = {};
+        for (const [field, value] of Object.entries(preferences.notifications)) {
+          if (!['documentExpiry', 'applicationUpdates', 'securityAccount'].includes(field)) {
+            errors.push(`The notifications.${field} preference is not supported.`);
+          } else if (typeof value !== 'boolean') {
+            errors.push(`The notifications.${field} preference must be a boolean.`);
+          } else if (field === 'securityAccount' && value !== true) {
+            errors.push('Security and account notifications cannot be disabled.');
+          } else {
+            notificationUpdates[field] = value;
+          }
+        }
+
+        if (Object.keys(notificationUpdates).length === 0) {
+          errors.push('At least one notification preference must be provided.');
+        } else {
+          updates.preferences = {
+            notifications: {
+              ...currentPreferences.notifications,
+              ...notificationUpdates,
+              securityAccount: true
+            }
+          };
+        }
+      }
+    }
+  }
+
   return { errors, updates };
 }
 
+function validatePasswordChange(body) {
+  const errors = [];
+  if (!isPlainObject(body)) {
+    return { errors: ['A valid request body is required.'] };
+  }
+
+  for (const field of Object.keys(body)) {
+    if (!['currentPassword', 'newPassword'].includes(field)) {
+      errors.push(`The ${field} field cannot be updated.`);
+    }
+  }
+
+  const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : '';
+  const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
+
+  if (!currentPassword) {
+    errors.push('Current password is required.');
+  } else if (bcrypt.truncates(currentPassword)) {
+    errors.push('Current password must not exceed 72 UTF-8 bytes.');
+  }
+  if (newPassword.length < 8 || newPassword.length > 128) {
+    errors.push('New password must be between 8 and 128 characters.');
+  }
+  if (bcrypt.truncates(newPassword)) {
+    errors.push('New password must not exceed 72 UTF-8 bytes.');
+  }
+
+  return { errors, currentPassword, newPassword };
+}
+
 function createToken(user) {
-  return jwt.sign({}, process.env.JWT_SECRET, {
-    subject: String(user._id),
-    expiresIn: process.env.JWT_EXPIRES_IN || '1d'
-  });
+  return jwt.sign(
+    { tokenVersion: Number.isSafeInteger(user.tokenVersion) ? user.tokenVersion : 0 },
+    process.env.JWT_SECRET,
+    {
+      subject: String(user._id),
+      expiresIn: process.env.JWT_EXPIRES_IN || '1d'
+    }
+  );
 }
 
 async function completeAccountDeletion(userId) {
@@ -215,7 +324,7 @@ router.get('/me', requireAuth, (request, response) => {
 
 router.put('/me', requireAuth, async (request, response, next) => {
   try {
-    const profile = validateProfileUpdates(request.body || {});
+    const profile = validateProfileUpdates(request.body || {}, request.user.preferences);
 
     if (profile.errors.length > 0) {
       return response.status(400).json({ error: 'Validation failed.', details: profile.errors });
@@ -239,6 +348,40 @@ router.put('/me', requireAuth, async (request, response, next) => {
       return response.status(409).json({ error: 'An account with that email already exists.' });
     }
 
+    return next(error);
+  }
+});
+
+router.post('/change-password', passwordChangeRateLimit, requireAuth, async (request, response, next) => {
+  try {
+    const passwordChange = validatePasswordChange(request.body);
+    if (passwordChange.errors.length > 0) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: passwordChange.errors
+      });
+    }
+
+    const user = await findUserById(request.user.id);
+    if (!user || user.deleting || !await bcrypt.compare(passwordChange.currentPassword, user.password)) {
+      return response.status(401).json({ error: 'Current password is incorrect or account is unavailable.' });
+    }
+
+    const newPasswordHash = await bcrypt.hash(passwordChange.newPassword, 12);
+    const updatedUser = await changeUserPasswordById(
+      request.user.id,
+      user.password,
+      newPasswordHash
+    );
+    if (!updatedUser) {
+      return response.status(401).json({ error: 'Current password is incorrect or account is unavailable.' });
+    }
+
+    return response.json({
+      user: toPublicUser(updatedUser),
+      token: createToken(updatedUser)
+    });
+  } catch (error) {
     return next(error);
   }
 });

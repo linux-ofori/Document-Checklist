@@ -73,7 +73,7 @@ test('allows the local frontend CORS preflight with required methods and headers
 
   assert.equal(response.status, 204);
   assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
-  assert.equal(response.headers.get('access-control-allow-methods'), 'GET,HEAD,POST,PUT,DELETE');
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET,HEAD,POST,PUT,PATCH,DELETE');
   assert.equal(response.headers.get('access-control-allow-headers'), 'Content-Type,Authorization');
   assertSecurityHeaders(response);
 });

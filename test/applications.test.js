@@ -509,3 +509,52 @@ test('account deletion removes the user applications and documents', async () =>
   assert.deepEqual(await findDocumentsByOwnerId(user.user.id), []);
   assert.equal(await findUserById(user.user.id), null);
 });
+
+test('account deletion removes only the owner applications and embedded checklist state', async () => {
+  const userA = await registerUser('Checklist Cleanup A', 'checklist-cleanup-a@example.com');
+  const userB = await registerUser('Checklist Cleanup B', 'checklist-cleanup-b@example.com');
+
+  const applicationA = (await request('/api/applications', {
+    method: 'POST',
+    token: userA.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  const applicationB = (await request('/api/applications', {
+    method: 'POST',
+    token: userB.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+
+  const updateA = await request(
+    `/api/applications/${applicationA.id}/requirements/identity-card`,
+    { method: 'PATCH', token: userA.token, body: { status: 'completed' } }
+  );
+  const updateB = await request(
+    `/api/applications/${applicationB.id}/requirements/identity-card`,
+    { method: 'PATCH', token: userB.token, body: { status: 'completed' } }
+  );
+  assert.equal(updateA.status, 200);
+  assert.equal(updateB.status, 200);
+  assert.equal(
+    updateA.payload.application.requirements.find((entry) => entry.key === 'identity-card').status,
+    'completed'
+  );
+  assert.equal(
+    updateB.payload.application.requirements.find((entry) => entry.key === 'identity-card').status,
+    'completed'
+  );
+
+  const deleted = await request('/api/auth/me', { method: 'DELETE', token: userA.token });
+  assert.equal(deleted.status, 200);
+  assert.equal(await findApplicationById(applicationA.id, userA.user.id), null);
+  assert.equal(await findApplicationById(applicationB.id, userB.user.id) !== null, true);
+
+  const retainedApplication = await request(`/api/applications/${applicationB.id}`, {
+    token: userB.token
+  });
+  assert.equal(retainedApplication.status, 200);
+  const retainedRequirement = retainedApplication.payload.application.requirements
+    .find((entry) => entry.key === 'identity-card');
+  assert.equal(retainedRequirement.status, 'completed');
+  assert.ok(retainedRequirement.completedAt);
+});

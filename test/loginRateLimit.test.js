@@ -16,6 +16,8 @@ process.env.LOGIN_RATE_LIMIT_WINDOW_MS = '900000';
 process.env.LOGIN_RATE_LIMIT_MAX = '5';
 process.env.REGISTRATION_RATE_LIMIT_WINDOW_MS = '900000';
 process.env.REGISTRATION_RATE_LIMIT_MAX = '2';
+process.env.PASSWORD_CHANGE_RATE_LIMIT_WINDOW_MS = '900000';
+process.env.PASSWORD_CHANGE_RATE_LIMIT_MAX = '2';
 
 const app = require('../src/server');
 let server;
@@ -44,10 +46,17 @@ after(async () => {
   fs.rmSync(cleanupTarget, { recursive: true, force: true });
 });
 
-async function request(route, { method = 'GET', body } = {}) {
+async function request(route, { method = 'GET', token, body } = {}) {
+  const headers = {};
+  if (body !== undefined) {
+    headers['content-type'] = 'application/json';
+  }
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   return { status: response.status, payload: await response.json() };
@@ -99,5 +108,24 @@ test('limits repeated login requests without limiting other auth routes', async 
   assert.equal(limitedRegistration.status, 429);
   assert.deepEqual(limitedRegistration.payload, {
     error: 'Too many registration attempts. Please try again later.'
+  });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rejectedChange = await request('/api/auth/change-password', {
+      method: 'POST',
+      token: successfulLogin.payload.token,
+      body: { currentPassword: 'incorrect-password', newPassword: 'replacement-password' }
+    });
+    assert.equal(rejectedChange.status, 401);
+  }
+
+  const limitedChange = await request('/api/auth/change-password', {
+    method: 'POST',
+    token: successfulLogin.payload.token,
+    body: { currentPassword: 'incorrect-password', newPassword: 'replacement-password' }
+  });
+  assert.equal(limitedChange.status, 429);
+  assert.deepEqual(limitedChange.payload, {
+    error: 'Too many password change attempts. Please try again later.'
   });
 });
