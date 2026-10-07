@@ -35,6 +35,27 @@ function startWithJwtSecret(secret) {
   });
 }
 
+function startWithJwtExpiresIn(expiresIn) {
+  const environment = {
+    ...process.env,
+    JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
+    DOCUMENT_CHECKLIST_USERS_DB_PATH: path.join(temporaryWorkingDirectory, 'jwt-expires-users.db'),
+    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(temporaryWorkingDirectory, 'jwt-expires-documents.db')
+  };
+
+  if (expiresIn === undefined) {
+    delete environment.JWT_EXPIRES_IN;
+  } else {
+    environment.JWT_EXPIRES_IN = expiresIn;
+  }
+
+  return spawnSync(process.execPath, ['-e', `require(${JSON.stringify(serverPath)})`], {
+    cwd: temporaryWorkingDirectory,
+    env: environment,
+    encoding: 'utf8'
+  });
+}
+
 function startWithDatabasePaths(usersDatabasePath, documentsDatabasePath) {
   const environment = {
     ...process.env,
@@ -63,6 +84,26 @@ test('fails startup when the JWT secret is missing, empty, whitespace-only, or t
       result.stderr,
       /JWT_SECRET must be configured with at least 32 non-whitespace characters\./
     );
+  }
+});
+
+test('fails startup when JWT_EXPIRES_IN is invalid', () => {
+  const result = startWithJwtExpiresIn('not-a-duration');
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /JWT_EXPIRES_IN must be a valid expiration value supported by jsonwebtoken\./
+  );
+});
+
+test('accepts the default and a valid configured JWT_EXPIRES_IN', () => {
+  for (const [description, expiresIn] of [
+    ['default when unset', undefined],
+    ['configured 1d', '1d']
+  ]) {
+    const result = startWithJwtExpiresIn(expiresIn);
+    assert.equal(result.status, 0, `${description} should allow startup: ${result.stderr}`);
   }
 });
 

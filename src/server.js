@@ -1,8 +1,16 @@
 require('dotenv').config();
 
+const jwt = require('jsonwebtoken');
 const jwtSecret = process.env.JWT_SECRET;
 if (typeof jwtSecret !== 'string' || jwtSecret.trim().length < 32) {
   throw new Error('JWT_SECRET must be configured with at least 32 non-whitespace characters.');
+}
+
+const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '1d';
+try {
+  jwt.sign({}, jwtSecret, { expiresIn: jwtExpiresIn });
+} catch {
+  throw new Error('JWT_EXPIRES_IN must be a valid expiration value supported by jsonwebtoken.');
 }
 
 const express = require('express');
