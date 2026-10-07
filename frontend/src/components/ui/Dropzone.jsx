@@ -7,10 +7,13 @@ export function Dropzone({
   file,
   onFileSelect,
   onFileClear,
+  onFileError,
   onDragActiveChange,
   hint,
-  formats = 'PDF, JPG or PNG',
-  maxSizeMb = 5,
+  formats = 'PDF, JPG, JPEG, PNG',
+  accept = '.pdf,.jpg,.jpeg,.png',
+  maxSizeMiB = 5,
+  disabled = false,
   className,
 }) {
   const inputRef = useRef(null)
@@ -24,8 +27,22 @@ export function Dropzone({
   const handleDrop = (event) => {
     event.preventDefault()
     setActive(false)
-    const dropped = event.dataTransfer?.files?.[0]
-    if (dropped) onFileSelect?.(dropped)
+    if (disabled) return
+
+    const droppedFiles = event.dataTransfer?.files
+    if (!droppedFiles?.length) return
+    if (droppedFiles.length > 1) {
+      onFileError?.('Only one file can be uploaded at a time. Choose a single file.')
+      return
+    }
+
+    onFileSelect?.(droppedFiles[0])
+  }
+
+  const handleInputChange = (event) => {
+    const selected = event.target.files?.[0] ?? null
+    event.target.value = ''
+    if (selected) onFileSelect?.(selected)
   }
 
   if (file) {
@@ -41,10 +58,10 @@ export function Dropzone({
         </div>
 
         <div className="ui-dropzone__actions">
-          <Button variant="ghost" size="sm" onClick={() => inputRef.current?.click()}>
+          <Button variant="ghost" size="sm" onClick={() => inputRef.current?.click()} disabled={disabled}>
             Replace
           </Button>
-          <Button variant="ghost" size="sm" onClick={onFileClear}>
+          <Button variant="ghost" size="sm" onClick={onFileClear} disabled={disabled}>
             Remove
           </Button>
         </div>
@@ -53,8 +70,9 @@ export function Dropzone({
           ref={inputRef}
           type="file"
           className="ui-visually-hidden"
-          accept={formats.replace(/ or /g, ',').replace(/ /g, '')}
-          onChange={(event) => onFileSelect?.(event.target.files?.[0] ?? null)}
+          accept={accept}
+          onChange={handleInputChange}
+          disabled={disabled}
         />
       </div>
     )
@@ -65,11 +83,11 @@ export function Dropzone({
       className={cn('ui-dropzone', isDragging && 'ui-dropzone--active', className)}
       onDragOver={(event) => {
         event.preventDefault()
-        setActive(true)
+        if (!disabled) setActive(true)
       }}
       onDragLeave={(event) => {
         event.preventDefault()
-        if (event.currentTarget === event.target) setActive(false)
+        if (!disabled && event.currentTarget === event.target) setActive(false)
       }}
       onDrop={handleDrop}
     >
@@ -79,7 +97,7 @@ export function Dropzone({
 
       <div className="ui-dropzone__text">
         <p className="ui-dropzone__title">Drag and drop your file here</p>
-        <p className="ui-caption">{hint ?? `${formats} up to ${maxSizeMb}MB`}</p>
+        <p className="ui-caption">{hint ?? `${formats} up to ${maxSizeMiB} MiB`}</p>
       </div>
 
       <Button
@@ -87,6 +105,7 @@ export function Dropzone({
         size="md"
         onClick={() => inputRef.current?.click()}
         leadingIcon={<FileUp size={16} aria-hidden="true" />}
+        disabled={disabled}
       >
         Choose file
       </Button>
@@ -95,8 +114,9 @@ export function Dropzone({
         ref={inputRef}
         type="file"
         className="ui-visually-hidden"
-        accept={formats.replace(/ or /g, ',').replace(/ /g, '')}
-        onChange={(event) => onFileSelect?.(event.target.files?.[0] ?? null)}
+        accept={accept}
+        onChange={handleInputChange}
+        disabled={disabled}
       />
     </div>
   )

@@ -247,9 +247,22 @@ export function AppDataProvider({ children }) {
         showToast(`${document.name} added to your documents.`)
         return document
       } catch (error) {
-        const errorMessage = error instanceof Error
-          ? error.message
-          : 'We could not upload the document.'
+        let errorMessage
+        if (error?.status === 400) {
+          errorMessage = 'Please check the document information and file, then try again.'
+        } else if (error?.status === 401) {
+          errorMessage = 'Your session has expired. Please sign in again and try again.'
+        } else if (error?.status === 403) {
+          errorMessage = 'You do not have permission to upload this document.'
+        } else if (error?.status === 404) {
+          errorMessage = 'The related resource could not be found. Please refresh and try again.'
+        } else if (error?.status === 413) {
+          errorMessage = 'The file is too large. Please choose a file no larger than 5 MiB.'
+        } else if (error instanceof TypeError) {
+          errorMessage = 'We could not reach the server. Check your connection and try again.'
+        } else {
+          errorMessage = 'Something went wrong while uploading the document. Please try again.'
+        }
         const message = document
           ? `${document.name} was uploaded, but its checklist link could not be saved. ${errorMessage}`
           : errorMessage

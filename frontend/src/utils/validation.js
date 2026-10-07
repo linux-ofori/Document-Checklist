@@ -1,5 +1,12 @@
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 const PASSWORD_MIN_LENGTH = 8
+export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024
+const UPLOAD_MIME_TYPES = {
+  '.pdf': 'application/pdf',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+}
 
 export const PASSWORD_RULES = [
   { id: 'length', label: 'At least 8 characters', test: (value) => value.length >= PASSWORD_MIN_LENGTH },
@@ -129,11 +136,51 @@ export function validateChangePasswordForm(values) {
   return errors
 }
 
+export function validateUploadFile(file) {
+  if (!file || typeof file !== 'object') {
+    return 'Choose a file to upload.'
+  }
+
+  if (typeof file.name !== 'string' || !file.name.trim()) {
+    return 'The selected file has no valid filename.'
+  }
+
+  if (typeof file.size !== 'number' || !Number.isFinite(file.size)) {
+    return 'The selected file size could not be determined.'
+  }
+  if (file.size <= 0) {
+    return 'The selected file is empty. Choose a file with content.'
+  }
+  if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+    return 'Choose a file that is 5 MiB or smaller.'
+  }
+
+  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+  const expectedMimeType = UPLOAD_MIME_TYPES[extension]
+  if (!expectedMimeType) {
+    return 'Choose a PDF, JPG, JPEG, or PNG file.'
+  }
+
+  if (file.type && file.type !== expectedMimeType) {
+    return 'The selected file type does not match its filename. Choose a matching PDF, JPG, JPEG, or PNG file.'
+  }
+
+  return null
+}
+
 export function validateUploadForm(values) {
   const errors = {}
 
-  if (!values.fileName) {
-    errors.file = 'Choose a file to upload.'
+  const fileError = validateUploadFile(values.file)
+  if (fileError) {
+    errors.file = fileError
+  }
+
+  const name = String(values.name ?? '').trim()
+  if (!name) {
+    errors.name = 'Enter a document name.'
+  } else if (name.length > 150) {
+    errors.name = 'Document name must be 150 characters or fewer.'
   }
 
   if (!String(values.documentType ?? '').trim()) {

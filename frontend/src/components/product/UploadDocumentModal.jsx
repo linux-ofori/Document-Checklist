@@ -1,17 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { CalendarClock, Info, Link2, Sparkles } from 'lucide-react'
 import { Alert, Button, Dropzone, Input, Modal, Select } from '../ui'
 import { useAppData } from '../../hooks/useAppData'
 import { validateUploadForm } from '../../utils/validation'
 import { formatFileSize, toDateInputValue, addMonths } from '../../utils/format'
 import {
-  ACCEPTED_UPLOAD_FORMATS,
   DOCUMENT_TYPES,
   DOCUMENT_TYPE_OPTIONS,
-  MAX_UPLOAD_SIZE_MB,
   getDocumentTypeLabel,
 } from '../../data'
 import { findRequirementByType } from '../../utils/checklist'
+import { MAX_UPLOAD_SIZE_BYTES, validateUploadFile } from '../../utils/validation'
 
 const MIN_EXPIRY_DATE = toDateInputValue(new Date())
 
@@ -33,13 +32,19 @@ export function UploadDocumentModal() {
 
   if (!upload.isOpen) return null
 
+  const handleClose = () => {
+    if (!upload.isSubmitting) closeUploadModal()
+  }
+
   return (
     <Modal
       isOpen
-      onClose={closeUploadModal}
+      onClose={handleClose}
       title="Upload a document"
       description="Add a file to your library. We will link it to the checklist item it satisfies."
       size="lg"
+      closeOnOverlayClick={!upload.isSubmitting}
+      closeOnEscape={!upload.isSubmitting}
       footer={<UploadFormFooter />}
     >
       <UploadForm prefill={upload.prefill} />
@@ -62,7 +67,7 @@ function UploadFormFooter() {
         size="md"
         form="upload-document-form"
         isLoading={isSubmitting}
-        disabled={isLoading}
+        disabled={isLoading || isSubmitting}
       >
         {isSubmitting ? 'Uploading' : 'Upload document'}
       </Button>
@@ -75,6 +80,8 @@ function UploadForm({ prefill }) {
 
   const [values, setValues] = useState(() => getInitialValues(prefill))
   const [errors, setErrors] = useState({})
+  const [submissionError, setSubmissionError] = useState('')
+  const isSubmittingRef = useRef(false)
 
   const isSubmitting = upload.isSubmitting
 
@@ -108,11 +115,22 @@ function UploadForm({ prefill }) {
   const setValue = (key, value) => {
     setValues((current) => ({ ...current, [key]: value }))
     clearError(key)
+    setSubmissionError('')
   }
 
   const handleFile = (file) => {
     if (!file) {
       setValues((current) => ({ ...current, file: null, fileName: '', fileSizeKb: 0 }))
+      clearError('file')
+      setSubmissionError('')
+      return
+    }
+
+    const fileError = validateUploadFile(file)
+    if (fileError) {
+      setValues((current) => ({ ...current, file: null, fileName: '', fileSizeKb: 0 }))
+      setErrors((current) => ({ ...current, file: fileError }))
+      setSubmissionError('')
       return
     }
 
@@ -125,6 +143,18 @@ function UploadForm({ prefill }) {
     }))
 
     clearError('file')
+    setSubmissionError('')
+  }
+
+  const handleFileError = (message) => {
+    setErrors((current) => ({ ...current, file: message }))
+    setSubmissionError('')
+  }
+
+  const handleFileClear = () => {
+    setValues((current) => ({ ...current, file: null, fileName: '', fileSizeKb: 0 }))
+    clearError('file')
+    setSubmissionError('')
   }
 
   const handleDocumentTypeChange = (documentType) => {
@@ -148,8 +178,46 @@ function UploadForm({ prefill }) {
       setErrors(validationErrors)
       return
     }
+    setErrors({})
 
-    await submitUpload(values)
+    if (isSubmittingRef.current || isSubmitting) return
+
+    isSubmittingRef.current = true
+    setSubmissionError('')
+    try {
+      await submitUpload(values)
+    } catch (error) {
+      if (error instanceof TypeError) {
+        setSubmissionError('We could not reach the server. Check your connection and retry.')
+      } else if (error?.status === 400) {
+        const details = Array.isArray(error.details)
+          ? error.details.filter(
+              (detail) =>
+                typeof detail === 'string'
+                && detail.trim()
+                && !/(?:stack|traceback|filesystem|storage key|database|sql|internal|exception| at .+:\d+)/i.test(detail)
+                && !/(?:[A-Z]:\\|\/(?:home|var|tmp|etc|srv|mnt|opt)\/)/i.test(detail),
+            )
+          : []
+        setSubmissionError(
+          details.length > 0
+            ? `Please check the document information and try again. ${details.join(' ')}`
+            : 'Please check the document information and file, then try again.',
+        )
+      } else if (error?.status === 413) {
+        setSubmissionError('The file is too large. Please choose a file no larger than 5 MiB.')
+      } else if (error?.status === 401) {
+        setSubmissionError('Your session has expired. Please sign in again and try again.')
+      } else if (error?.status === 403) {
+        setSubmissionError('You do not have permission to upload this document.')
+      } else if (error?.status === 404) {
+        setSubmissionError('The selected application could not be found. Please refresh and try again.')
+      } else {
+        setSubmissionError('Something went wrong while uploading the document. Please try again.')
+      }
+    } finally {
+      isSubmittingRef.current = false
+    }
   }
 
   return (
@@ -159,13 +227,27 @@ function UploadForm({ prefill }) {
           values.fileName ? { name: values.fileName, meta: formatFileSize(values.fileSizeKb) } : null
         }
         onFileSelect={handleFile}
-        onFileClear={() => setValues((current) => ({ ...current, file: null, fileName: '', fileSizeKb: 0 }))}
-        formats={ACCEPTED_UPLOAD_FORMATS.join(', ')}
-        maxSizeMb={MAX_UPLOAD_SIZE_MB}
+        onFileClear={handleFileClear}
+        onFileError={handleFileError}
+        formats="PDF, JPG, JPEG, PNG"
+        accept=".pdf,.jpg,.jpeg,.png"
+        maxSizeMiB={MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)}
+        disabled={isSubmitting}
       />
 
       {errors.file ? (
-        <Alert tone="danger" title="Choose a file first" description={errors.file} />
+        <Alert
+          tone="danger"
+          title={values.file ? 'File not accepted' : 'Choose a file'}
+          description={errors.file}
+        />
+      ) : null}
+      {submissionError ? (
+        <Alert
+          tone="danger"
+          title="Upload could not be completed"
+          description={`${submissionError} Your file and entered details have been kept so you can correct the issue or retry.`}
+        />
       ) : null}
 
       <div className="upload-form__grid">
