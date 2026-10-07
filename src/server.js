@@ -77,7 +77,7 @@ app.use(cors({
   origin: (origin, callback) => {
     callback(null, origin === 'http://localhost:5173' ? origin : false);
   },
-  methods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '10kb' }));
