@@ -146,7 +146,6 @@ export function LoginPage() {
                 variant="primary"
                 size="lg"
                 isLoading={isSubmitting}
-                disabled={isLoading}
                 leadingIcon={isSubmitting ? null : <Lock size={16} aria-hidden="true" />}
               >
                 {isSubmitting ? 'Signing in' : 'Log in'}
