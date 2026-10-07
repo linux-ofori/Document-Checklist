@@ -65,6 +65,34 @@ async function request(route, { method = 'GET', token, body } = {}) {
   return { status: response.status, payload };
 }
 
+const publicDocumentFields = [
+  'id',
+  'name',
+  'completed',
+  'documentType',
+  'status',
+  'applicationId',
+  'expiresAt',
+  'note',
+  'fileName',
+  'fileSizeKb',
+  'uploadedAt',
+  'createdAt',
+  'updatedAt'
+].sort();
+
+function assertPublicDocument(document) {
+  assert.deepEqual(Object.keys(document).sort(), publicDocumentFields);
+  assert.equal(Object.hasOwn(document, 'ownerId'), false);
+  assert.equal(Object.hasOwn(document, '_id'), false);
+}
+
+function insertLegacyDocument(document) {
+  return new Promise((resolve, reject) => {
+    documentsDatabase.insert(document, (error, inserted) => error ? reject(error) : resolve(inserted));
+  });
+}
+
 test('returns JSON 404 responses for unknown API paths and unsupported methods', async () => {
   for (const [route, method] of [
     ['/api/auth/does-not-exist', 'GET'],
@@ -210,6 +238,15 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(created.status, 201);
     assert.equal(created.payload.document.name, 'Passport');
     assert.equal(created.payload.document.completed, false);
+    assert.equal(created.payload.document.documentType, null);
+    assert.equal(created.payload.document.status, 'in-review');
+    assert.equal(created.payload.document.applicationId, null);
+    assert.equal(created.payload.document.expiresAt, null);
+    assert.equal(created.payload.document.note, null);
+    assert.equal(created.payload.document.fileName, null);
+    assert.equal(created.payload.document.fileSizeKb, null);
+    assert.equal(created.payload.document.uploadedAt, null);
+    assertPublicDocument(created.payload.document);
     const documentId = created.payload.document.id;
 
     const listed = await request('/api/documents', { token: primaryToken });
@@ -219,6 +256,8 @@ test('authentication, account management, and document API', async (t) => {
     const retrieved = await request(`/api/documents/${documentId}`, { token: primaryToken });
     assert.equal(retrieved.status, 200);
     assert.equal(retrieved.payload.document.id, documentId);
+    assertPublicDocument(retrieved.payload.document);
+    assertPublicDocument(listed.payload.documents[0]);
 
     const updated = await request(`/api/documents/${documentId}`, {
       method: 'PUT', token: primaryToken, body: { name: 'Updated Passport', completed: true }
@@ -226,6 +265,7 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(updated.status, 200);
     assert.equal(updated.payload.document.name, 'Updated Passport');
     assert.equal(updated.payload.document.completed, true);
+    assert.equal(updated.payload.document.status, 'in-review');
 
     const deleted = await request(`/api/documents/${documentId}`, {
       method: 'DELETE', token: primaryToken
@@ -257,6 +297,34 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal((await request(`/api/documents/${documentId}`, {
       token: secondRegistration.payload.token
     })).status, 200);
+    const primaryList = await request('/api/documents', { token: primaryToken });
+    assert.equal(primaryList.payload.documents.some((document) => document.id === documentId), false);
+  });
+
+  await t.test('lists owned documents newest first', async () => {
+    const older = await insertLegacyDocument({
+      ownerId: registration.payload.user.id,
+      name: 'Older list record',
+      completed: false,
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z'
+    });
+    const newer = await insertLegacyDocument({
+      ownerId: registration.payload.user.id,
+      name: 'Newer list record',
+      completed: false,
+      createdAt: '2021-01-01T00:00:00.000Z',
+      updatedAt: '2021-01-01T00:00:00.000Z'
+    });
+    const listed = await request('/api/documents', { token: primaryToken });
+    const matchingDocuments = listed.payload.documents.filter(
+      (document) => [older._id, newer._id].includes(document.id)
+    );
+
+    assert.deepEqual(matchingDocuments.map((document) => document.id), [newer._id, older._id]);
+    for (const document of matchingDocuments) {
+      assertPublicDocument(document);
+    }
   });
 
   await t.test('rejects invalid document data', async () => {
@@ -273,6 +341,319 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal((await request('/api/documents/not-an-id', {
       method: 'PUT', token: primaryToken, body: {}
     })).status, 400);
+  });
+
+  await t.test('rejects invalid document fields on both create and update', async () => {
+    const created = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: { name: 'Invalid update target' }
+    });
+    assert.equal(created.status, 201);
+
+    const invalidUpdates = [
+      { name: '   ' },
+      { name: 'x'.repeat(151) },
+      { completed: 'true' },
+      { documentType: 'passport' },
+      { status: 'pending' },
+      { applicationId: '../foreign-application' },
+      { expiresAt: 'not-a-date' },
+      { note: 42 },
+      { note: 'x'.repeat(2001) },
+      { unexpected: true }
+    ];
+    for (const body of invalidUpdates) {
+      const response = await request(`/api/documents/${created.payload.document.id}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body
+      });
+      assert.equal(response.status, 400, `${Object.keys(body)[0]} should be rejected`);
+      assert.equal(response.payload.error, 'Validation failed.');
+    }
+  });
+
+  await t.test('persists and returns document metadata with independent defaults', async () => {
+    const created = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: {
+        name: 'Metadata Passport',
+        completed: true,
+        documentType: 'identity-card',
+        applicationId: 'app-passport-2026',
+        expiresAt: '2027-04-05',
+        note: 'Stored as plain text: <em>memo</em>'
+      }
+    });
+
+    assert.equal(created.status, 201);
+    const document = created.payload.document;
+    assert.equal(document.completed, true);
+    assert.equal(document.documentType, 'identity-card');
+    assert.equal(document.status, 'in-review');
+    assert.equal(document.applicationId, 'app-passport-2026');
+    assert.equal(document.expiresAt, '2027-04-05T00:00:00.000Z');
+    assert.equal(document.note, 'Stored as plain text: <em>memo</em>');
+    assert.equal(document.fileName, null);
+    assert.equal(document.fileSizeKb, null);
+    assert.equal(document.uploadedAt, null);
+    assert.equal(Object.hasOwn(document, '_id'), false);
+    assert.equal(Object.hasOwn(document, 'ownerId'), false);
+
+    const listed = await request('/api/documents', { token: primaryToken });
+    const listedDocument = listed.payload.documents.find((entry) => entry.id === document.id);
+    assert.deepEqual(listedDocument, document);
+    assertPublicDocument(listedDocument);
+
+    const retrieved = await request(`/api/documents/${document.id}`, { token: primaryToken });
+    assert.deepEqual(retrieved.payload.document, document);
+    assertPublicDocument(retrieved.payload.document);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const updates = [
+      { name: 'Updated Metadata Passport' },
+      { completed: false },
+      { documentType: 'other' },
+      { status: 'verified' },
+      { applicationId: 'app-business-2026' },
+      { expiresAt: '2028-06-07T13:14:15+02:00' },
+      { note: 'Updated note' },
+      { name: 'Combined metadata update', note: 'Changed with name' }
+    ];
+    let updatedAt = document.updatedAt;
+    let previousStatus = document.status;
+    let previousCompleted = document.completed;
+    for (const body of updates) {
+      const updated = await request(`/api/documents/${document.id}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body
+      });
+      assert.equal(updated.status, 200);
+      assert.notEqual(updated.payload.document.updatedAt, updatedAt);
+      if (Object.hasOwn(body, 'status')) {
+        assert.equal(updated.payload.document.completed, previousCompleted);
+      } else {
+        assert.equal(updated.payload.document.status, previousStatus);
+      }
+      assertPublicDocument(updated.payload.document);
+      updatedAt = updated.payload.document.updatedAt;
+      previousStatus = updated.payload.document.status;
+      previousCompleted = updated.payload.document.completed;
+    }
+
+    const updatedDocument = (await request(`/api/documents/${document.id}`, {
+      token: primaryToken
+    })).payload.document;
+    assert.equal(updatedDocument.name, 'Combined metadata update');
+    assert.equal(updatedDocument.completed, false);
+    assert.equal(updatedDocument.documentType, 'other');
+    assert.equal(updatedDocument.status, 'verified');
+    assert.equal(updatedDocument.applicationId, 'app-business-2026');
+    assert.equal(updatedDocument.expiresAt, '2028-06-07T11:14:15.000Z');
+    assert.equal(updatedDocument.note, 'Changed with name');
+
+    const statusOnly = await request(`/api/documents/${document.id}`, {
+      method: 'PUT',
+      token: primaryToken,
+      body: { status: 'draft' }
+    });
+    assert.equal(statusOnly.payload.document.status, 'draft');
+    assert.equal(statusOnly.payload.document.completed, false);
+    const completedOnly = await request(`/api/documents/${document.id}`, {
+      method: 'PUT',
+      token: primaryToken,
+      body: { completed: true }
+    });
+    assert.equal(completedOnly.payload.document.status, 'draft');
+    assert.equal(completedOnly.payload.document.completed, true);
+
+    const cleared = await request(`/api/documents/${document.id}`, {
+      method: 'PUT',
+      token: primaryToken,
+      body: { documentType: null, applicationId: null, expiresAt: null, note: null }
+    });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.payload.document.documentType, null);
+    assert.equal(cleared.payload.document.applicationId, null);
+    assert.equal(cleared.payload.document.expiresAt, null);
+    assert.equal(cleared.payload.document.note, null);
+    assert.equal(cleared.payload.document.status, 'draft');
+    assert.equal(cleared.payload.document.completed, true);
+  });
+
+  await t.test('accepts explicit null metadata at creation', async () => {
+    const created = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: {
+        name: 'Null metadata document',
+        documentType: null,
+        applicationId: null,
+        expiresAt: null,
+        note: null
+      }
+    });
+
+    assert.equal(created.status, 201);
+    assert.equal(created.payload.document.documentType, null);
+    assert.equal(created.payload.document.status, 'in-review');
+    assert.equal(created.payload.document.applicationId, null);
+    assert.equal(created.payload.document.expiresAt, null);
+    assert.equal(created.payload.document.note, null);
+    assertPublicDocument(created.payload.document);
+  });
+
+  await t.test('rejects unsupported metadata values and protected client fields', async () => {
+    const invalidBodies = [
+      [{ name: 'Invalid type', documentType: 'passport' }, 'documentType'],
+      [{ name: 'Invalid status', status: 'pending' }, 'status'],
+      [{ name: 'Invalid application', applicationId: '../other-user' }, 'applicationId'],
+      [{ name: 'Invalid expiry', expiresAt: '2027-02-30' }, 'expiresAt'],
+      [{ name: 'Invalid note', note: 42 }, 'note'],
+      [{ name: 'Oversized note', note: 'x'.repeat(2001) }, 'note']
+    ];
+
+    for (const [body, field] of invalidBodies) {
+      const response = await request('/api/documents', {
+        method: 'POST',
+        token: primaryToken,
+        body
+      });
+      assert.equal(response.status, 400, `${field} should be rejected`);
+      assert.equal(response.payload.error, 'Validation failed.');
+    }
+
+    for (const field of [
+      'unexpected',
+      '_id',
+      'id',
+      'ownerId',
+      'createdAt',
+      'updatedAt',
+      'fileName',
+      'fileSizeKb',
+      'fileSizeBytes',
+      'uploadedAt',
+      'storage',
+      'storagePath',
+      'storageKey',
+      'path'
+    ]) {
+      const response = await request('/api/documents', {
+        method: 'POST',
+        token: primaryToken,
+        body: { name: 'Protected field test', [field]: 'client-controlled' }
+      });
+      assert.equal(response.status, 400, `${field} should not be client controlled`);
+    }
+
+    const existing = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: { name: 'Protected update target' }
+    });
+    for (const field of [
+      'id',
+      '_id',
+      'ownerId',
+      'createdAt',
+      'updatedAt',
+      'fileName',
+      'fileSizeKb',
+      'fileSizeBytes',
+      'uploadedAt',
+      'storage',
+      'storagePath',
+      'storageKey',
+      'path'
+    ]) {
+      const response = await request(`/api/documents/${existing.payload.document.id}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body: { [field]: 'client-controlled' }
+      });
+      assert.equal(response.status, 400, `${field} should not be updatable`);
+    }
+  });
+
+  await t.test('returns legacy documents without requiring a database migration', async () => {
+    const createdAt = '2024-01-02T03:04:05.000Z';
+    const updatedAt = '2024-02-03T04:05:06.000Z';
+    const legacyDocument = await insertLegacyDocument({
+      ownerId: registration.payload.user.id,
+      name: 'Legacy Passport',
+      completed: true,
+      createdAt,
+      updatedAt
+    });
+
+    const retrieved = await request(`/api/documents/${legacyDocument._id}`, { token: primaryToken });
+    assert.equal(retrieved.status, 200);
+    assert.deepEqual(retrieved.payload.document, {
+      id: legacyDocument._id,
+      name: 'Legacy Passport',
+      completed: true,
+      documentType: null,
+      status: 'in-review',
+      applicationId: null,
+      fileName: null,
+      fileSizeKb: null,
+      uploadedAt: null,
+      expiresAt: null,
+      note: null,
+      createdAt,
+      updatedAt
+    });
+    assertPublicDocument(retrieved.payload.document);
+  });
+
+  await t.test('returns consistent delete errors and requires authentication for every operation', async () => {
+    for (const [route, options] of [
+      ['/api/documents', { method: 'POST', body: { name: 'No token' } }],
+      ['/api/documents', { method: 'GET' }],
+      ['/api/documents/0123456789abcdef', { method: 'GET' }],
+      ['/api/documents/0123456789abcdef', { method: 'PUT', body: { completed: true } }],
+      ['/api/documents/0123456789abcdef', { method: 'DELETE' }]
+    ]) {
+      const response = await request(route, options);
+      assert.equal(response.status, 401);
+    }
+
+    const missing = await request('/api/documents/0123456789abcdef', {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(missing.status, 404);
+    assert.deepEqual(missing.payload, { error: 'Document not found.' });
+
+    const invalidId = await request('/api/documents/not-an-id', {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(invalidId.status, 400);
+    assert.deepEqual(invalidId.payload, { error: 'Invalid document ID.' });
+
+    const otherAccount = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Delete Isolation', email: 'delete-isolation@example.com', password: 'delete-isolation-pass' }
+    });
+    const otherDocument = await request('/api/documents', {
+      method: 'POST',
+      token: otherAccount.payload.token,
+      body: { name: 'Not owned by primary' }
+    });
+    const forbiddenDelete = await request(`/api/documents/${otherDocument.payload.document.id}`, {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(forbiddenDelete.status, 404);
+    assert.deepEqual(forbiddenDelete.payload, { error: 'Document not found.' });
+    assert.equal((await request(`/api/documents/${otherDocument.payload.document.id}`, {
+      token: otherAccount.payload.token
+    })).status, 200);
   });
 
   await t.test('rejects oversized JSON request bodies', async () => {

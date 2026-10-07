@@ -1,5 +1,7 @@
 const database = require('../config/documentsDatabase');
 
+const DOCUMENT_STATUS_DEFAULT = 'in-review';
+
 function toPublicDocument(document) {
   if (!document) {
     return null;
@@ -9,12 +11,29 @@ function toPublicDocument(document) {
     id: document._id,
     name: document.name,
     completed: document.completed,
+    documentType: document.documentType ?? null,
+    status: document.status ?? DOCUMENT_STATUS_DEFAULT,
+    applicationId: document.applicationId ?? null,
+    fileName: null,
+    fileSizeKb: null,
+    uploadedAt: null,
+    expiresAt: document.expiresAt ?? null,
+    note: document.note ?? null,
     createdAt: document.createdAt,
     updatedAt: document.updatedAt
   };
 }
 
-function createDocument({ ownerId, name, completed }) {
+function createDocument({
+  ownerId,
+  name,
+  completed,
+  documentType = null,
+  status = DOCUMENT_STATUS_DEFAULT,
+  applicationId = null,
+  expiresAt = null,
+  note = null
+}) {
   const timestamp = new Date().toISOString();
 
   return new Promise((resolve, reject) => {
@@ -22,6 +41,11 @@ function createDocument({ ownerId, name, completed }) {
       ownerId,
       name,
       completed,
+      documentType,
+      status,
+      applicationId,
+      expiresAt,
+      note,
       createdAt: timestamp,
       updatedAt: timestamp
     }, (error, document) => error ? reject(error) : resolve(document));
@@ -47,15 +71,13 @@ function findDocumentById(id, ownerId) {
   });
 }
 
-function updateDocumentById(id, ownerId, { name, completed }) {
+function updateDocumentById(id, ownerId, documentUpdates) {
   const updates = { updatedAt: new Date().toISOString() };
 
-  if (name !== undefined) {
-    updates.name = name;
-  }
-
-  if (completed !== undefined) {
-    updates.completed = completed;
+  for (const field of ['name', 'completed', 'documentType', 'status', 'applicationId', 'expiresAt', 'note']) {
+    if (documentUpdates[field] !== undefined) {
+      updates[field] = documentUpdates[field];
+    }
   }
 
   return new Promise((resolve, reject) => {

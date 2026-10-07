@@ -68,9 +68,14 @@ The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There
 | `password` | Required on registration and login; 8–128 characters and at most 72 UTF-8 bytes. |
 | Document `name` | Required on create; 1–150 characters after trimming. Optional on update. |
 | Document `completed` | Optional on create and update; must be a boolean. Defaults to `false` on create. |
+| Document `documentType` | Optional and nullable; otherwise one of `identity-card`, `photograph`, `birth-certificate`, `application-form`, `proof-of-address`, `supporting-document`, `fee-receipt`, `business-registration-certificate`, `company-constitution`, `tax-clearance`, `bank-statement`, `medical-report`, `drivers-licence`, `test-results`, `transcript`, `recommendation-letter`, `old-passport`, `police-clearance`, `marriage-certificate`, or `other`. |
+| Document `status` | Optional on create and update; one of `draft`, `in-review`, `verified`, `expiring`, or `expired`. Defaults to `in-review`. |
+| Document `applicationId` | Optional and nullable; otherwise 1–64 alphanumeric/hyphen characters, starting with an alphanumeric character. It is stored as a reference only; no application API exists yet. |
+| Document `expiresAt` | Optional and nullable; accepts an ISO calendar date or ISO date-time and is normalized to UTC ISO date-time. |
+| Document `note` | Optional and nullable; plain text, at most 2,000 characters. |
 | Document `id` | Exactly 16 alphanumeric characters. |
 
-Profile updates must include at least one of `name` or `email`. Document updates must include at least one of `name` or `completed`. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs and owner fields. Registration and login validate their named fields but do not reject additional fields.
+Profile updates must include at least one of `name` or `email`. Document updates must include at least one editable document field. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs, owner fields, timestamps, upload metadata, and storage information. Registration and login validate their named fields but do not reject additional fields.
 
 ### Authentication endpoints
 
@@ -175,12 +180,17 @@ All document endpoints require a Bearer token. Documents are stored separately i
 
 **Authentication:** Required. Creates a document owned by the authenticated user.
 
-Required JSON field: `name`. Optional field: `completed` (defaults to `false`).
+Required JSON field: `name`. Optional fields: `completed` (defaults to `false`), `documentType`, `status` (defaults to `in-review`), `applicationId`, `expiresAt`, and `note`. The request must contain a JSON object and may contain only these fields. Optional nullable fields can be omitted or set to `null`. `completed` and `status` are independent: setting either one never changes the other. `status` accepts `draft`, `in-review`, `verified`, `expiring`, or `expired`; clients may set these values, but this API does not implement a reviewer/role system or a review workflow. `applicationId` is stored as a reference only and is not checked against an application record.
 
 ```json
 {
 	"name": "Passport",
-	"completed": false
+	"completed": false,
+	"documentType": "identity-card",
+	"status": "in-review",
+	"applicationId": "app-passport-2026",
+	"expiresAt": "2028-05-01",
+	"note": "Renew before travel."
 }
 ```
 
@@ -192,13 +202,25 @@ Required JSON field: `name`. Optional field: `completed` (defaults to `false`).
 		"id": "a1b2c3d4e5f6g7h8",
 		"name": "Passport",
 		"completed": false,
+		"documentType": "identity-card",
+		"status": "in-review",
+		"applicationId": "app-passport-2026",
+		"fileName": null,
+		"fileSizeKb": null,
+		"uploadedAt": null,
+		"expiresAt": "2028-05-01T00:00:00.000Z",
+		"note": "Renew before travel.",
 		"createdAt": "2026-10-07T12:00:00.000Z",
 		"updatedAt": "2026-10-07T12:00:00.000Z"
 	}
 }
 ```
 
-Possible errors: `400` validation error, `401` authentication error, or a shared request/server error below.
+Missing optional metadata is returned as `null`. `fileName`, `fileSizeKb`, and `uploadedAt` are read-only response placeholders, currently always `null`; uploads are not implemented. These fields, file size in bytes, storage keys/paths, IDs, owner fields, and timestamps are rejected if supplied in a request.
+
+`GET /api/documents` returns `{ "documents": [...] }` and `GET /api/documents/:id` returns `{ "document": { ... } }`, using this same complete public document representation. List results contain only the authenticated user's documents and are ordered newest first. `PUT /api/documents/:id` accepts partial updates to `name`, `completed`, `documentType`, `status`, `applicationId`, `expiresAt`, and `note`; at least one recognized field is required. Setting either `completed` or `status` does not alter the other. Nullable metadata can be cleared with `null`.
+
+Possible errors: `400` validation error or invalid document ID, `401` authentication error, `404` missing or non-owned document, or a shared request/server error below. `DELETE /api/documents/:id` returns `200 { "message": "Document deleted successfully." }` when an owned document is deleted.
 
 #### `GET /api/documents`
 
@@ -213,6 +235,14 @@ Possible errors: `400` validation error, `401` authentication error, or a shared
 			"id": "a1b2c3d4e5f6g7h8",
 			"name": "Passport",
 			"completed": false,
+			"documentType": "identity-card",
+			"status": "in-review",
+			"applicationId": "app-passport-2026",
+			"fileName": null,
+			"fileSizeKb": null,
+			"uploadedAt": null,
+			"expiresAt": "2028-05-01T00:00:00.000Z",
+			"note": "Renew before travel.",
 			"createdAt": "2026-10-07T12:00:00.000Z",
 			"updatedAt": "2026-10-07T12:00:00.000Z"
 		}
@@ -232,7 +262,7 @@ Possible errors: `401` authentication error or a shared server error below.
 
 **Authentication:** Required. Updates one document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters.
 
-Provide at least one of the optional JSON fields `name` or `completed`. Their validation rules are in the summary above; other fields are rejected.
+Provide at least one editable field: `name`, `completed`, `documentType`, `status`, `applicationId`, `expiresAt`, or `note`. Their validation rules are in the summary above; other fields are rejected. Nullable optional metadata can be cleared with `null`.
 
 ```json
 { "completed": true }

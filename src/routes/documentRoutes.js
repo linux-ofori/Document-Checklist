@@ -12,8 +12,51 @@ const {
 } = require('../models/documentModel');
 
 const router = express.Router();
-const allowedFields = ['name', 'completed'];
+const documentTypes = new Set([
+  'identity-card',
+  'photograph',
+  'birth-certificate',
+  'application-form',
+  'proof-of-address',
+  'supporting-document',
+  'fee-receipt',
+  'business-registration-certificate',
+  'company-constitution',
+  'tax-clearance',
+  'bank-statement',
+  'medical-report',
+  'drivers-licence',
+  'test-results',
+  'transcript',
+  'recommendation-letter',
+  'old-passport',
+  'police-clearance',
+  'marriage-certificate',
+  'other'
+]);
+const documentStatuses = new Set(['verified', 'in-review', 'expiring', 'expired', 'draft']);
+const allowedFields = ['name', 'completed', 'documentType', 'status', 'applicationId', 'expiresAt', 'note'];
 const documentIdPattern = /^[a-z0-9]{16}$/i;
+const applicationIdPattern = /^[a-z0-9][a-z0-9-]{0,63}$/i;
+const isoDateTimePattern = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const maximumNoteLength = 2000;
+
+function normalizeDateTime(value) {
+  if (typeof value !== 'string' || !isoDateTimePattern.test(value)) {
+    return null;
+  }
+
+  const datePart = value.slice(0, 10);
+  const calendarDate = new Date(`${datePart}T00:00:00.000Z`);
+  const parsedDate = new Date(value);
+  if (!Number.isFinite(parsedDate.getTime())
+      || !Number.isFinite(calendarDate.getTime())
+      || calendarDate.toISOString().slice(0, 10) !== datePart) {
+    return null;
+  }
+
+  return parsedDate.toISOString();
+}
 
 function validateDocumentInput(body, isUpdate) {
   const errors = [];
@@ -54,6 +97,57 @@ function validateDocumentInput(body, isUpdate) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'documentType')) {
+    if (body.documentType === null) {
+      updates.documentType = null;
+    } else if (typeof body.documentType !== 'string' || !documentTypes.has(body.documentType)) {
+      errors.push('Document type must be one of the supported document types.');
+    } else {
+      updates.documentType = body.documentType;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'status')) {
+    if (typeof body.status !== 'string' || !documentStatuses.has(body.status)) {
+      errors.push('Document status must be one of the supported statuses.');
+    } else {
+      updates.status = body.status;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'applicationId')) {
+    if (body.applicationId === null) {
+      updates.applicationId = null;
+    } else if (typeof body.applicationId !== 'string' || !applicationIdPattern.test(body.applicationId)) {
+      errors.push('Application ID must be a valid identifier or null.');
+    } else {
+      updates.applicationId = body.applicationId;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'expiresAt')) {
+    if (body.expiresAt === null) {
+      updates.expiresAt = null;
+    } else {
+      const expiresAt = normalizeDateTime(body.expiresAt);
+      if (expiresAt === null) {
+        errors.push('Expiry date must be a valid ISO date or date-time.');
+      } else {
+        updates.expiresAt = expiresAt;
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'note')) {
+    if (body.note === null) {
+      updates.note = null;
+    } else if (typeof body.note !== 'string' || body.note.length > maximumNoteLength) {
+      errors.push(`Note must be plain text no longer than ${maximumNoteLength} characters, or null.`);
+    } else {
+      updates.note = body.note.trim();
+    }
+  }
+
   return { errors, updates };
 }
 
@@ -80,7 +174,12 @@ router.post('/', async (request, response, next) => {
       return createDocument({
         ownerId: request.user.id,
         name: input.updates.name,
-        completed: input.updates.completed === undefined ? false : input.updates.completed
+        completed: input.updates.completed === undefined ? false : input.updates.completed,
+        documentType: input.updates.documentType,
+        status: input.updates.status,
+        applicationId: input.updates.applicationId,
+        expiresAt: input.updates.expiresAt,
+        note: input.updates.note
       });
     });
 
