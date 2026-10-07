@@ -39,11 +39,12 @@ after(async () => {
   fs.rmSync(cleanupTarget, { recursive: true, force: true });
 });
 
-async function request(route, { method = 'GET', body, forwardedProto = 'https' } = {}) {
+async function request(route, { method = 'GET', body, forwardedProto = 'https', headers: extraHeaders = {} } = {}) {
   const headers = body === undefined ? {} : { 'content-type': 'application/json' };
   if (forwardedProto) {
     headers['x-forwarded-proto'] = forwardedProto;
   }
+  Object.assign(headers, extraHeaders);
 
   const response = await fetch(`${baseUrl}${route}`, {
     method,
@@ -58,6 +59,32 @@ function assertSecurityHeaders(response) {
   assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN');
   assert.equal(response.headers.get('content-security-policy'), null);
 }
+
+test('allows the local frontend CORS preflight with required methods and headers', async () => {
+  const response = await request('/api/documents', {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'http://localhost:5173',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'Content-Type,Authorization'
+    }
+  });
+
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET,HEAD,POST,PUT,DELETE');
+  assert.equal(response.headers.get('access-control-allow-headers'), 'Content-Type,Authorization');
+  assertSecurityHeaders(response);
+});
+
+test('does not allow a different origin', async () => {
+  const response = await request('/api/auth/me', {
+    headers: { origin: 'http://localhost:5174' }
+  });
+
+  assert.equal(response.headers.get('access-control-allow-origin'), null);
+  assertSecurityHeaders(response);
+});
 
 test('sets Helmet headers on successful and error API responses', async () => {
   const successfulResponse = await request('/api/auth/register', {

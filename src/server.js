@@ -52,6 +52,7 @@ if (process.env.NODE_ENV === 'production' && trustedProxyIps.length === 0) {
 }
 
 const express = require('express');
+const cors = require('cors');
 const helmet = require('helmet');
 const authRoutes = require('./routes/authRoutes');
 const documentRoutes = require('./routes/documentRoutes');
@@ -71,6 +72,13 @@ if (process.env.NODE_ENV === 'production') {
     return next();
   });
 }
+app.use(cors({
+  origin: (origin, callback) => {
+    callback(null, origin === 'http://localhost:5173' ? origin : false);
+  },
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '10kb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
