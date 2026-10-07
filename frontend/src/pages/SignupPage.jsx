@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react'
 import { Check, UserPlus } from 'lucide-react'
 import { MarketingLayout } from '../layouts/MarketingLayout'
 import { AuthAside, AuthMobileBrand } from '../components/marketing/AuthAside'
-import { GoogleButton } from '../components/marketing/GoogleButton'
 import { Alert, Button, Checkbox, Input } from '../components/ui'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAppData } from '../hooks/useAppData'
+import { request, storeAuthToken } from '../services'
 import { validateSignUpForm, passwordStrength } from '../utils/validation'
 import { ROUTES } from '../utils/routes'
 
@@ -32,7 +32,6 @@ export function SignupPage() {
   const [values, setValues] = useState(INITIAL_VALUES)
   const [errors, setErrors] = useState({})
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false)
   const [formError, setFormError] = useState('')
 
   const strength = useMemo(() => passwordStrength(values.password), [values.password])
@@ -54,8 +53,9 @@ export function SignupPage() {
     setFormError('')
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
+    setFormError('')
 
     const validationErrors = validateSignUpForm(values)
     if (Object.keys(validationErrors).length > 0) {
@@ -65,20 +65,27 @@ export function SignupPage() {
 
     setIsSubmitting(true)
 
-    window.setTimeout(() => {
-      setIsSubmitting(false)
+    try {
+      const result = await request('auth/register', {
+        method: 'POST',
+        body: {
+          name: values.name,
+          email: values.email,
+          password: values.password,
+        },
+      })
+
+      if (!storeAuthToken(result?.token)) {
+        throw new Error('Your account was created, but we could not save your sign-in. Please log in.')
+      }
+
       showToast('Account created. Choose a process to build your first checklist.')
       navigate(ROUTES.chooseProcess)
-    }, 760)
-  }
-
-  const handleGoogle = () => {
-    setIsGoogleLoading(true)
-    window.setTimeout(() => {
-      setIsGoogleLoading(false)
-      showToast('Account created with Google. Choose a process to get started.')
-      navigate(ROUTES.chooseProcess)
-    }, 820)
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'We could not create your account.')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -233,14 +240,6 @@ export function SignupPage() {
                 {isSubmitting ? 'Creating your account' : 'Create account'}
               </Button>
             </form>
-
-            <p className="auth-divider">or</p>
-
-            <GoogleButton
-              onClick={handleGoogle}
-              isLoading={isGoogleLoading}
-              label="Sign up with Google"
-            />
 
             <p className="marketing-auth__switch">
               Already have an account?{' '}
