@@ -1,23 +1,48 @@
-import { APPLICATIONS } from '../data'
-import { resolveAfter, resolvePayload } from './client'
+import { request } from './client'
 
-export function fetchApplications() {
-  return resolvePayload(APPLICATIONS, 420)
+function applicationFromResponse(payload) {
+  if (!payload?.application) {
+    throw new Error('The server returned an invalid application response.')
+  }
+  return payload.application
 }
 
-export function fetchApplication(applicationId) {
-  return resolvePayload(
-    APPLICATIONS.find((application) => application.id === applicationId) ?? null,
-    200,
+export async function fetchApplications() {
+  const payload = await request('applications')
+  if (!Array.isArray(payload?.applications)) {
+    throw new Error('The server returned an invalid applications response.')
+  }
+  return payload.applications
+}
+
+export async function fetchApplication(applicationId) {
+  const payload = await request(`applications/${encodeURIComponent(applicationId)}`)
+  return applicationFromResponse(payload)
+}
+
+export async function createApplication({ processId, name }) {
+  const body = { processId }
+  if (name !== undefined) {
+    body.name = name
+  }
+
+  const payload = await request('applications', { method: 'POST', body })
+  return applicationFromResponse(payload)
+}
+
+export async function saveRequirementStatus({
+  applicationId,
+  requirementKey,
+  status,
+  documentId,
+}) {
+  const body = { status }
+  if (documentId !== undefined) {
+    body.documentId = documentId
+  }
+
+  return request(
+    `applications/${encodeURIComponent(applicationId)}/requirements/${encodeURIComponent(requirementKey)}`,
+    { method: 'PATCH', body },
   )
-}
-
-export function saveRequirementStatus({ applicationId, requirementKey, status, documentId, completedAt }) {
-  return resolveAfter(180).then(() => ({
-    applicationId,
-    requirementKey,
-    status,
-    documentId: documentId ?? null,
-    completedAt: completedAt ?? null,
-  }))
 }

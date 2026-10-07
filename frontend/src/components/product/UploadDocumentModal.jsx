@@ -20,6 +20,7 @@ function getInitialValues(prefill) {
     name: prefill?.name ?? '',
     documentType: prefill?.documentType ?? '',
     applicationId: prefill?.applicationId ?? '',
+    file: null,
     fileName: '',
     fileSizeKb: 0,
     expiryDate: '',
@@ -111,12 +112,13 @@ function UploadForm({ prefill }) {
 
   const handleFile = (file) => {
     if (!file) {
-      setValues((current) => ({ ...current, fileName: '', fileSizeKb: 0 }))
+      setValues((current) => ({ ...current, file: null, fileName: '', fileSizeKb: 0 }))
       return
     }
 
     setValues((current) => ({
       ...current,
+      file,
       fileName: file.name,
       fileSizeKb: Math.max(1, Math.round(file.size / 1024)),
       name: current.name || file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' '),
@@ -157,7 +159,7 @@ function UploadForm({ prefill }) {
           values.fileName ? { name: values.fileName, meta: formatFileSize(values.fileSizeKb) } : null
         }
         onFileSelect={handleFile}
-        onFileClear={() => setValues((current) => ({ ...current, fileName: '', fileSizeKb: 0 }))}
+        onFileClear={() => setValues((current) => ({ ...current, file: null, fileName: '', fileSizeKb: 0 }))}
         formats={ACCEPTED_UPLOAD_FORMATS.join(', ')}
         maxSizeMb={MAX_UPLOAD_SIZE_MB}
       />

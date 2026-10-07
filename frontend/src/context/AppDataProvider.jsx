@@ -39,17 +39,26 @@ export function AppDataProvider({ children }) {
     isMountedRef.current = true
 
     const hydrate = async () => {
-      const [processes, applications, documents, notifications, profile] = await Promise.all([
-        fetchProcesses(),
-        fetchApplications(),
-        fetchDocuments(),
-        fetchNotifications(),
-        fetchProfile(),
-      ])
+      try {
+        const [processes, applications, documents, notifications, profile] = await Promise.all([
+          fetchProcesses(),
+          fetchApplications(),
+          fetchDocuments(),
+          fetchNotifications(),
+          fetchProfile(),
+        ])
 
-      if (!isMountedRef.current) return
+        if (!isMountedRef.current) return
 
-      dispatch({ type: ACTIONS.HYDRATE, payload: { processes, applications, documents, notifications, profile } })
+        dispatch({ type: ACTIONS.HYDRATE, payload: { processes, applications, documents, notifications, profile } })
+      } catch (error) {
+        if (!isMountedRef.current) return
+
+        dispatch({
+          type: ACTIONS.HYDRATE_FAILED,
+          payload: error instanceof Error ? error.message : 'We could not load your account data.',
+        })
+      }
     }
 
     hydrate()
@@ -106,15 +115,49 @@ export function AppDataProvider({ children }) {
   }, [state.toast])
 
   const setRequirementStatus = useCallback(async (applicationId, requirementKey, status) => {
+    const application = state.applications.find((entry) => entry.id === applicationId)
+    if (!application) {
+      throw new Error('Application not found.')
+    }
+    const requirement = (application.requirements ?? [])
+      .find((entry) => entry.key === requirementKey)
+    if (!requirement) {
+      throw new Error('Checklist requirement not found.')
+    }
+
     const completedAt = status === 'completed' ? new Date().toISOString() : null
+    let result
+    try {
+      result = await saveRequirementStatus({
+        applicationId,
+        requirementKey,
+        status,
+        documentId: requirement.documentId ?? undefined,
+      })
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'We could not update the checklist.'
+      showToast(errorMessage, 'warning')
+      throw error
+    }
+    const savedRequirement = result?.requirement
+      ?? result?.application?.requirements?.find((entry) => entry.key === requirementKey)
+    const patch = {
+      status: savedRequirement?.status ?? status,
+      documentId: Object.hasOwn(savedRequirement ?? {}, 'documentId')
+        ? savedRequirement.documentId
+        : requirement.documentId ?? null,
+      completedAt: Object.hasOwn(savedRequirement ?? {}, 'completedAt')
+        ? savedRequirement.completedAt
+        : completedAt,
+    }
 
     dispatch({
       type: ACTIONS.REQUIREMENT_UPDATED,
-      payload: { applicationId, requirementKey, patch: { status, completedAt } },
+      payload: { applicationId, requirementKey, patch },
     })
-
-    await saveRequirementStatus({ applicationId, requirementKey, status, completedAt })
-  }, [])
+  }, [state.applications, showToast])
 
   const toggleRequirement = useCallback(
     (applicationId, requirementKey, currentStatus) => {
@@ -125,10 +168,15 @@ export function AppDataProvider({ children }) {
   )
 
   const startApplication = useCallback(async (processId) => {
-    const application = await createApplicationRecord({ processId })
-    dispatch({ type: ACTIONS.APPLICATION_ADDED, payload: application })
-    return application
-  }, [])
+    try {
+      const application = await createApplicationRecord({ processId })
+      dispatch({ type: ACTIONS.APPLICATION_ADDED, payload: application })
+      return application
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'We could not create the application.', 'warning')
+      throw error
+    }
+  }, [showToast])
 
   const updateApplication = useCallback((id, patch) => {
     dispatch({ type: ACTIONS.APPLICATION_PATCHED, payload: { id, patch } })
@@ -145,79 +193,115 @@ export function AppDataProvider({ children }) {
   const submitUpload = useCallback(
     async (values) => {
       dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: true } })
+      let document = null
 
-      const document = await uploadDocument({
-        name: values.name,
-        documentType: values.documentType,
-        applicationId: values.applicationId,
-        fileName: values.fileName,
-        fileSizeKb: values.fileSizeKb,
-        expiryDate: values.expiryDate,
-        note: values.note,
-      })
+      try {
+        document = await uploadDocument({
+          file: values.file,
+          name: values.name,
+          documentType: values.documentType,
+          applicationId: values.applicationId,
+          expiryDate: values.expiryDate,
+          note: values.note,
+        })
 
-      dispatch({ type: ACTIONS.DOCUMENT_ADDED, payload: document })
+        dispatch({ type: ACTIONS.DOCUMENT_ADDED, payload: document })
+        dispatch({ type: ACTIONS.UPLOAD_CLOSED })
 
-      const application = state.applications.find((entry) => entry.id === document.applicationId)
-      if (application) {
-        const requirement = findRequirementByType(
-          buildRequirements(application),
-          document.documentType,
-        )
+        const application = state.applications.find((entry) => entry.id === document.applicationId)
+        if (application) {
+          const requirement = findRequirementByType(
+            buildRequirements(application),
+            document.documentType,
+          )
 
-        if (requirement) {
-          dispatch({
-            type: ACTIONS.REQUIREMENT_UPDATED,
-            payload: {
+          if (requirement) {
+            const result = await saveRequirementStatus({
               applicationId: application.id,
               requirementKey: requirement.key,
-              patch: {
-                status: 'completed',
-                documentId: document.id,
-                completedAt: document.uploadedAt,
+              status: 'completed',
+              documentId: document.id,
+            })
+            const savedRequirement = result?.requirement
+              ?? result?.application?.requirements?.find((entry) => entry.key === requirement.key)
+
+            dispatch({
+              type: ACTIONS.REQUIREMENT_UPDATED,
+              payload: {
+                applicationId: application.id,
+                requirementKey: requirement.key,
+                patch: {
+                  status: savedRequirement?.status ?? 'completed',
+                  documentId: Object.hasOwn(savedRequirement ?? {}, 'documentId')
+                    ? savedRequirement.documentId
+                    : document.id,
+                  completedAt: Object.hasOwn(savedRequirement ?? {}, 'completedAt')
+                    ? savedRequirement.completedAt
+                    : document.uploadedAt,
+                },
               },
-            },
-          })
+            })
+          }
         }
+
+        showToast(`${document.name} added to your documents.`)
+        return document
+      } catch (error) {
+        const errorMessage = error instanceof Error
+          ? error.message
+          : 'We could not upload the document.'
+        const message = document
+          ? `${document.name} was uploaded, but its checklist link could not be saved. ${errorMessage}`
+          : errorMessage
+        showToast(message, 'warning')
+        throw error
+      } finally {
+        dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: false } })
       }
-
-      dispatch({ type: ACTIONS.UPLOAD_CLOSED })
-      showToast(`${document.name} added to your documents.`)
-
-      return document
     },
     [state.applications, showToast],
   )
 
   const updateDocument = useCallback(async (documentId, patch, message) => {
-    dispatch({ type: ACTIONS.DOCUMENT_PATCHED, payload: { id: documentId, patch } })
-    await updateDocumentRecord(documentId, patch)
-    if (message) showToast(message)
+    try {
+      const updatedDocument = await updateDocumentRecord(documentId, patch)
+      dispatch({
+        type: ACTIONS.DOCUMENT_PATCHED,
+        payload: { id: documentId, patch: updatedDocument },
+      })
+      if (message) showToast(message)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'We could not update the document.', 'warning')
+      throw error
+    }
   }, [showToast])
 
   const removeDocument = useCallback(
     async (documentId) => {
       const document = state.documents.find((entry) => entry.id === documentId)
+      try {
+        await removeDocumentRecord(documentId)
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'We could not delete the document.', 'warning')
+        throw error
+      }
 
       state.applications.forEach((application) => {
-        const affected = (application.requirements ?? []).filter(
-          (requirement) => requirement.documentId === documentId,
-        )
-
-        affected.forEach((requirement) => {
-          dispatch({
-            type: ACTIONS.REQUIREMENT_UPDATED,
-            payload: {
-              applicationId: application.id,
-              requirementKey: requirement.key,
-              patch: { status: 'missing', documentId: null, completedAt: null },
-            },
+        (application.requirements ?? [])
+          .filter((requirement) => requirement.documentId === documentId)
+          .forEach((requirement) => {
+            dispatch({
+              type: ACTIONS.REQUIREMENT_UPDATED,
+              payload: {
+                applicationId: application.id,
+                requirementKey: requirement.key,
+                patch: { status: 'missing', documentId: null, completedAt: null },
+              },
+            })
           })
-        })
       })
 
       dispatch({ type: ACTIONS.DOCUMENT_REMOVED, payload: documentId })
-      await removeDocumentRecord(documentId)
       showToast(`${document?.name ?? 'Document'} removed.`, 'neutral')
     },
     [state.applications, state.documents, showToast],
@@ -319,6 +403,7 @@ export function AppDataProvider({ children }) {
     () => ({
       ...state,
       isLoading: state.status === 'loading',
+      error: state.error,
       applicationViews,
       documentViews,
       notificationViews,

@@ -16,7 +16,10 @@ export {
 export { fetchApplications, fetchApplication, saveRequirementStatus } from './applicationService'
 export {
   fetchDocuments,
+  fetchDocument,
+  fetchDocumentFile,
   uploadDocument,
+  replaceDocumentFile,
   updateDocumentRecord,
   removeDocumentRecord,
 } from './documentService'

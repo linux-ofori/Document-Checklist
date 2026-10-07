@@ -65,18 +65,31 @@ export function clearAuthToken() {
 }
 
 export async function request(path, options = {}) {
-  const { token: providedToken, headers: requestHeaders, body, ...fetchOptions } = options
+  const {
+    token: providedToken,
+    headers: requestHeaders,
+    body,
+    responseType = 'json',
+    ...fetchOptions
+  } = options
   const headers = new Headers(requestHeaders)
   let requestBody = body
 
-  if (body !== undefined) {
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
+  if (isFormData) {
+    headers.delete('Content-Type')
+  } else if (body !== undefined) {
     headers.set('Content-Type', 'application/json')
     requestBody = JSON.stringify(body)
   }
 
   let token = providedToken
   if (token === undefined && typeof window !== 'undefined') {
-    token = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+    try {
+      token = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+    } catch {
+      token = null
+    }
   }
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
@@ -88,9 +101,14 @@ export async function request(path, options = {}) {
     headers,
     ...(body === undefined ? {} : { body: requestBody }),
   })
-  const responseText = await response.text()
-  let payload = null
+  let payload
 
+  if (response.ok && responseType === 'blob') {
+    return response.blob()
+  }
+
+  const responseText = await response.text()
+  payload = null
   if (responseText) {
     try {
       payload = JSON.parse(responseText)
@@ -105,6 +123,9 @@ export async function request(path, options = {}) {
       : `Request failed with status ${response.status}${response.statusText ? ` ${response.statusText}` : ''}.`
     const error = new Error(message)
     error.status = response.status
+    if (Array.isArray(payload?.details)) {
+      error.details = payload.details
+    }
     throw error
   }
 

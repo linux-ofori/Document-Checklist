@@ -2,6 +2,7 @@ import { createId } from '../services'
 
 export const ACTIONS = {
   HYDRATE: 'HYDRATE',
+  HYDRATE_FAILED: 'HYDRATE_FAILED',
   REQUIREMENT_UPDATED: 'REQUIREMENT_UPDATED',
   APPLICATION_ADDED: 'APPLICATION_ADDED',
   APPLICATION_PATCHED: 'APPLICATION_PATCHED',
@@ -26,6 +27,7 @@ export const ACTIONS = {
 
 export const INITIAL_STATE = {
   status: 'loading',
+  error: null,
   processes: [],
   applications: [],
   documents: [],
@@ -72,6 +74,7 @@ export function appDataReducer(state, action) {
       return {
         ...state,
         status: 'ready',
+        error: null,
         processes: action.payload.processes,
         applications: action.payload.applications,
         documents: action.payload.documents,
@@ -79,6 +82,9 @@ export function appDataReducer(state, action) {
         profile: action.payload.profile,
         assistant: { ...state.assistant, messages: [WELCOME_MESSAGE] },
       }
+
+    case ACTIONS.HYDRATE_FAILED:
+      return { ...state, status: 'error', error: action.payload }
 
     case ACTIONS.REQUIREMENT_UPDATED:
       return {
