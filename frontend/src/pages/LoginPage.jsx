@@ -6,6 +6,7 @@ import { GoogleButton } from '../components/marketing/GoogleButton'
 import { Alert, Button, Checkbox, Input } from '../components/ui'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAppData } from '../hooks/useAppData'
+import { request, storeAuthToken } from '../services'
 import { validateLoginForm } from '../utils/validation'
 import { ROUTES } from '../utils/routes'
 
@@ -32,8 +33,9 @@ export function LoginPage() {
     setFormError('')
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
+    setFormError('')
 
     const validationErrors = validateLoginForm(values)
     if (Object.keys(validationErrors).length > 0) {
@@ -43,11 +45,26 @@ export function LoginPage() {
 
     setIsSubmitting(true)
 
-    window.setTimeout(() => {
-      setIsSubmitting(false)
+    try {
+      const result = await request('auth/login', {
+        method: 'POST',
+        body: {
+          email: values.email,
+          password: values.password,
+        },
+      })
+
+      if (!storeAuthToken(result?.token)) {
+        throw new Error('We could not save your sign-in. Please try again.')
+      }
+
       showToast('Welcome back. Loading your checklists.')
       navigate(ROUTES.dashboard)
-    }, 620)
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'We could not sign you in. Please try again.')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const handleGoogle = () => {
