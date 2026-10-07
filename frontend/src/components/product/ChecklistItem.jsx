@@ -21,6 +21,7 @@ export function ChecklistItem({
   onToggle,
   onSetStatus,
   onUpload,
+  onReplaceDocument,
   onViewDocument,
   isUpdating = false,
 }) {
@@ -117,10 +118,16 @@ export function ChecklistItem({
             },
             { id: 'divider', type: 'divider' },
             {
-              id: 'upload',
+              id: linkedDocument ? 'replace-document' : 'upload',
               label: linkedDocument ? 'Replace document' : 'Upload document',
               icon: <FileText size={15} aria-hidden="true" />,
-              onSelect: () => onUpload?.(requirement),
+              onSelect: () => {
+                if (linkedDocument?.id) {
+                  onReplaceDocument?.(linkedDocument)
+                } else {
+                  onUpload?.(requirement)
+                }
+              },
             },
           ]}
         />

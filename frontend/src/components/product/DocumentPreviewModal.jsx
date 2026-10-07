@@ -141,9 +141,7 @@ export function DocumentPreviewModal() {
               onClick={() => {
                 handleClose()
                 openUploadModal({
-                  applicationId: document.applicationId,
-                  documentType: document.documentType,
-                  name: document.name,
+                  replacementTarget: document,
                 })
               }}
             >

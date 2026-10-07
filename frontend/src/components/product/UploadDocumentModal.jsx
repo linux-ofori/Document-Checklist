@@ -29,6 +29,7 @@ function getInitialValues(prefill) {
 
 export function UploadDocumentModal() {
   const { upload, closeUploadModal } = useAppData()
+  const isReplacement = Boolean(upload.prefill?.replacementTarget?.id)
 
   if (!upload.isOpen) return null
 
@@ -40,19 +41,23 @@ export function UploadDocumentModal() {
     <Modal
       isOpen
       onClose={handleClose}
-      title="Upload a document"
-      description="Add a file to your library. We will link it to the checklist item it satisfies."
+      title={isReplacement ? 'Replace document' : 'Upload a document'}
+      description={
+        isReplacement
+          ? 'Choose a replacement file. The existing document and checklist links will be preserved.'
+          : 'Add a file to your library. We will link it to the checklist item it satisfies.'
+      }
       size="lg"
       closeOnOverlayClick={!upload.isSubmitting}
       closeOnEscape={!upload.isSubmitting}
-      footer={<UploadFormFooter />}
+      footer={<UploadFormFooter isReplacement={isReplacement} />}
     >
       <UploadForm prefill={upload.prefill} />
     </Modal>
   )
 }
 
-function UploadFormFooter() {
+function UploadFormFooter({ isReplacement }) {
   const { upload, closeUploadModal, isLoading } = useAppData()
   const isSubmitting = upload.isSubmitting
 
@@ -69,14 +74,18 @@ function UploadFormFooter() {
         isLoading={isSubmitting}
         disabled={isLoading || isSubmitting}
       >
-        {isSubmitting ? 'Uploading' : 'Upload document'}
+        {isSubmitting
+          ? isReplacement ? 'Replacing' : 'Uploading'
+          : isReplacement ? 'Replace file' : 'Upload document'}
       </Button>
     </>
   )
 }
 
 function UploadForm({ prefill }) {
-  const { upload, submitUpload, applicationViews } = useAppData()
+  const { upload, submitUpload, replaceDocument, closeUploadModal, applicationViews } = useAppData()
+  const replacementTarget = prefill?.replacementTarget
+  const isReplacement = Boolean(replacementTarget?.id)
 
   const [values, setValues] = useState(() => getInitialValues(prefill))
   const [errors, setErrors] = useState({})
@@ -173,7 +182,10 @@ function UploadForm({ prefill }) {
   const handleSubmit = async (event) => {
     event.preventDefault()
 
-    const validationErrors = validateUploadForm(values)
+    const fileError = isReplacement ? validateUploadFile(values.file) : null
+    const validationErrors = isReplacement
+      ? (fileError ? { file: fileError } : {})
+      : validateUploadForm(values)
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors)
       return
@@ -185,9 +197,30 @@ function UploadForm({ prefill }) {
     isSubmittingRef.current = true
     setSubmissionError('')
     try {
-      await submitUpload(values)
+      if (isReplacement) {
+        await replaceDocument(replacementTarget.id, values.file)
+        closeUploadModal()
+      } else {
+        await submitUpload(values)
+      }
     } catch (error) {
-      if (error instanceof TypeError) {
+      if (isReplacement) {
+        if (error instanceof TypeError) {
+          setSubmissionError('Could not replace this file. Please check your connection and try again.')
+        } else if (error?.status === 400) {
+          setSubmissionError('Please check the selected file and try again.')
+        } else if (error?.status === 401) {
+          setSubmissionError('Your session has expired. Please sign in again.')
+        } else if (error?.status === 403) {
+          setSubmissionError('You do not have permission to replace this file.')
+        } else if (error?.status === 404) {
+          setSubmissionError('This document is no longer available.')
+        } else if (error?.status === 413) {
+          setSubmissionError('The selected file is too large. Maximum size is 5 MiB.')
+        } else {
+          setSubmissionError('Could not replace this file. Please try again.')
+        }
+      } else if (error instanceof TypeError) {
         setSubmissionError('We could not reach the server. Check your connection and retry.')
       } else if (error?.status === 400) {
         const details = Array.isArray(error.details)
@@ -245,11 +278,22 @@ function UploadForm({ prefill }) {
       {submissionError ? (
         <Alert
           tone="danger"
-          title="Upload could not be completed"
-          description={`${submissionError} Your file and entered details have been kept so you can correct the issue or retry.`}
+          title={isReplacement ? 'Replacement could not be completed' : 'Upload could not be completed'}
+          description={`${submissionError} Your file${isReplacement ? '' : ' and entered details'} have been kept so you can retry.`}
         />
       ) : null}
 
+      {isReplacement ? (
+        <Alert
+          tone="info"
+          title={`Replacing ${replacementTarget.name}`}
+          description={[
+            replacementTarget.fileName,
+            replacementTarget.typeLabel ?? replacementTarget.documentType,
+            replacementTarget.applicationName,
+          ].filter(Boolean).join(' · ')}
+        />
+      ) : (
       <div className="upload-form__grid">
         <Input
           label="Document name"
@@ -294,37 +338,42 @@ function UploadForm({ prefill }) {
           disabled={isSubmitting}
         />
       </div>
-
-      {matchedRequirement ? (
-        <Alert
-          tone="success"
-          icon={<Link2 size={18} aria-hidden="true" />}
-          title={`This will complete “${matchedRequirement.name}”`}
-          description={`Uploading a ${getDocumentTypeLabel(
-            values.documentType,
-          ).toLowerCase()} marks ${matchedRequirement.name.toLowerCase()} as completed and updates your progress.`}
-        />
-      ) : (
-        <Alert
-          tone="info"
-          icon={<Info size={18} aria-hidden="true" />}
-          title="Saved to your document library"
-          description="Pick an application so this document can be matched to a checklist item and reused later."
-        />
       )}
 
-      <div className="upload-form__tip">
-        {values.fileName ? (
-          <Sparkles size={15} aria-hidden="true" />
-        ) : (
-          <CalendarClock size={15} aria-hidden="true" />
-        )}
-        <span>
-          {values.fileName
-            ? 'Tip: name files clearly, for example “Ghana Card 2026”, so expiry reminders stay accurate.'
-            : 'Adding expiry dates lets Smart Document Checklist warn you 60, 30 and 7 days before a document runs out.'}
-        </span>
-      </div>
+      {!isReplacement ? (
+        <>
+          {matchedRequirement ? (
+            <Alert
+              tone="success"
+              icon={<Link2 size={18} aria-hidden="true" />}
+              title={`This will complete “${matchedRequirement.name}”`}
+              description={`Uploading a ${getDocumentTypeLabel(
+                values.documentType,
+              ).toLowerCase()} marks ${matchedRequirement.name.toLowerCase()} as completed and updates your progress.`}
+            />
+          ) : (
+            <Alert
+              tone="info"
+              icon={<Info size={18} aria-hidden="true" />}
+              title="Saved to your document library"
+              description="Pick an application so this document can be matched to a checklist item and reused later."
+            />
+          )}
+
+          <div className="upload-form__tip">
+            {values.fileName ? (
+              <Sparkles size={15} aria-hidden="true" />
+            ) : (
+              <CalendarClock size={15} aria-hidden="true" />
+            )}
+            <span>
+              {values.fileName
+                ? 'Tip: name files clearly, for example “Ghana Card 2026”, so expiry reminders stay accurate.'
+                : 'Adding expiry dates lets Smart Document Checklist warn you 60, 30 and 7 days before a document runs out.'}
+            </span>
+          </div>
+        </>
+      ) : null}
     </form>
   )
 }

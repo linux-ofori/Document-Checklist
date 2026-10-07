@@ -13,6 +13,7 @@ import {
   saveProfile,
   updateDocumentRecord,
   uploadDocument,
+  replaceDocumentFile,
   createApplicationRecord,
   saveRequirementStatus,
 } from '../services'
@@ -275,6 +276,45 @@ export function AppDataProvider({ children }) {
     [state.applications, showToast],
   )
 
+  const replaceDocument = useCallback(async (documentId, file) => {
+    dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: true } })
+
+    try {
+      const updatedDocument = await replaceDocumentFile(documentId, file)
+      if (updatedDocument?.id !== documentId) {
+        throw new Error('The replacement response did not match the existing document.')
+      }
+
+      dispatch({
+        type: ACTIONS.DOCUMENT_PATCHED,
+        payload: { id: documentId, patch: updatedDocument },
+      })
+      showToast('Document file replaced successfully.')
+      return updatedDocument
+    } catch (error) {
+      let message
+      if (error?.status === 400) {
+        message = 'Please check the selected file and try again.'
+      } else if (error?.status === 401) {
+        message = 'Your session has expired. Please sign in again.'
+      } else if (error?.status === 403) {
+        message = 'You do not have permission to replace this file.'
+      } else if (error?.status === 404) {
+        message = 'This document is no longer available.'
+      } else if (error?.status === 413) {
+        message = 'The selected file is too large. Maximum size is 5 MiB.'
+      } else if (error instanceof TypeError) {
+        message = 'Could not replace this file. Please check your connection and try again.'
+      } else {
+        message = 'Could not replace this file. Please try again.'
+      }
+      showToast(message, 'warning')
+      throw error
+    } finally {
+      dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: false } })
+    }
+  }, [showToast])
+
   const updateDocument = useCallback(async (documentId, patch, message) => {
     try {
       const updatedDocument = await updateDocumentRecord(documentId, patch)
@@ -433,6 +473,7 @@ export function AppDataProvider({ children }) {
       openUploadModal,
       closeUploadModal,
       submitUpload,
+      replaceDocument,
       updateDocument,
       removeDocument,
       markNotificationRead,
@@ -461,6 +502,7 @@ export function AppDataProvider({ children }) {
       openUploadModal,
       closeUploadModal,
       submitUpload,
+      replaceDocument,
       updateDocument,
       removeDocument,
       markNotificationRead,

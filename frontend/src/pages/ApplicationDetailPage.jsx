@@ -102,6 +102,12 @@ export function ApplicationDetailPage({ applicationId }) {
     })
   }
 
+  const handleReplaceDocument = (document) => {
+    if (document?.id) {
+      openUploadModal({ replacementTarget: document })
+    }
+  }
+
   const getLinkedDocument = (requirement) =>
     requirement.documentId ? getDocumentById(requirement.documentId) : null
 
@@ -124,6 +130,7 @@ export function ApplicationDetailPage({ applicationId }) {
             onToggle={(item) => runUpdate(item)}
             onSetStatus={(item, status) => runUpdate(item, status)}
             onUpload={handleUpload}
+            onReplaceDocument={handleReplaceDocument}
             onViewDocument={(document) => openDocumentPreview(document.id)}
             isUpdating={updatingKey === requirement.key}
           />
