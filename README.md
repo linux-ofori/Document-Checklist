@@ -35,30 +35,264 @@ npm test
 
 The tests use temporary user and document databases under `data/`, a test-only JWT secret, and an ephemeral local port. Test data is removed when the test run finishes; the development databases and `.env` are not used or modified.
 
+## API reference
+
+### Base URL and requests
+
+The default base URL is [http://localhost:3000](http://localhost:3000/). Append the routes below to this URL. Send JSON request bodies with:
+
+```http
+Content-Type: application/json
+```
+
+### Authentication
+
+Registration and login return a JWT in the `token` response field. Include it on every protected request using this header:
+
+```http
+Authorization: Bearer <token>
+```
+
+The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There is currently no refresh-token endpoint or logout endpoint. Deleting an account also makes its token unusable.
+
+### Validation summary
+
+| Field | Rules |
+|---|---|
+| `name` for accounts | Required on registration; 2–100 characters after trimming. Optional on profile updates. |
+| `email` | Required on registration and login; valid email format, at most 254 characters. Trimmed and lowercased. Optional on profile updates. |
+| `password` | Required on registration and login; 8–128 characters and at most 72 UTF-8 bytes. |
+| Document `name` | Required on create; 1–150 characters after trimming. Optional on update. |
+| Document `completed` | Optional on create and update; must be a boolean. Defaults to `false` on create. |
+| Document `id` | Exactly 16 alphanumeric characters. |
+
+Profile updates must include at least one of `name` or `email`. Document updates must include at least one of `name` or `completed`. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs and owner fields. Registration and login validate their named fields but do not reject additional fields.
+
 ### Authentication endpoints
 
-- `POST /api/auth/register` with `{ "name": "A User", "email": "user@example.com", "password": "at-least-8-chars" }`
-- `POST /api/auth/login` with `{ "email": "user@example.com", "password": "at-least-8-chars" }`
-- `GET /api/auth/me` with `Authorization: Bearer <token>`
-- `PUT /api/auth/me` with `Authorization: Bearer <token>` and one or both editable profile fields, such as `{ "name": "Updated Name", "email": "updated@example.com" }`
-- `DELETE /api/auth/me` with `Authorization: Bearer <token>`
+#### `POST /api/auth/register`
 
-Registration and login return a JWT in `token` and the sanitized user in `user`.
+**Authentication:** Not required. Creates an account.
 
-Login and registration requests are each limited to 5 per client IP in a 15-minute window, with independent quotas. Configure `LOGIN_RATE_LIMIT_MAX` and `LOGIN_RATE_LIMIT_WINDOW_MS` to override the login limit, and `REGISTRATION_RATE_LIMIT_MAX` and `REGISTRATION_RATE_LIMIT_WINDOW_MS` to override the registration limit. Values must be positive integers. Exceeding either limit returns HTTP `429` with a JSON error.
+Required JSON fields: `name`, `email`, `password`.
 
-The application does not enable Express `trust proxy` by default. If it runs behind a reverse proxy or load balancer, configure trust only for the known proxy addresses or a verified hop count that matches the deployment topology. Do not blindly trust forwarded headers: clients that can spoof `X-Forwarded-For` could evade IP-based limits. With proxy trust disabled, requests may all appear to come from the proxy IP. The default in-memory limiter is per process; deployments with multiple instances should configure a shared rate-limit store to enforce one quota across instances.
+```json
+{
+	"name": "A User",
+	"email": "user@example.com",
+	"password": "CorrectHorse12!"
+}
+```
 
-The profile endpoint accepts `name` (2-100 characters) and `email` (a valid email address up to 254 characters). It rejects other fields and returns the updated sanitized user in `user`. Deleting the account returns `{ "message": "Account deleted successfully." }`. Both profile endpoints act only on the account associated with the Bearer token.
+**Success:** `201 Created`
+
+```json
+{
+	"user": {
+		"id": "generated-user-id",
+		"name": "A User",
+		"email": "user@example.com",
+		"createdAt": "2026-10-07T12:00:00.000Z",
+		"updatedAt": "2026-10-07T12:00:00.000Z"
+	},
+	"token": "<jwt>"
+}
+```
+
+The user object is sanitized and does not include the password. Possible errors: `400` validation error, `409` duplicate email, `429` registration rate limit, or a shared request/server error below.
+
+#### `POST /api/auth/login`
+
+**Authentication:** Not required. Verifies credentials and returns a JWT.
+
+Required JSON fields: `email`, `password`.
+
+```json
+{
+	"email": "user@example.com",
+	"password": "CorrectHorse12!"
+}
+```
+
+**Success:** `200 OK`; response has the same `user` and `token` shape as registration. Possible errors: `400` validation error, `401` invalid email or password, `429` login rate limit, or a shared request/server error below.
+
+#### `GET /api/auth/me`
+
+**Authentication:** Required. Returns the account associated with the Bearer token. No request body.
+
+**Success:** `200 OK`
+
+```json
+{
+	"user": {
+		"id": "generated-user-id",
+		"name": "A User",
+		"email": "user@example.com",
+		"createdAt": "2026-10-07T12:00:00.000Z",
+		"updatedAt": "2026-10-07T12:00:00.000Z"
+	}
+}
+```
+
+Possible errors: `401` authentication error or a shared server error below.
+
+#### `PUT /api/auth/me`
+
+**Authentication:** Required. Updates the account associated with the Bearer token.
+
+Provide one or both optional fields, `name` and `email`; at least one must be present. Their validation rules are in the summary above. Other fields are rejected.
+
+```json
+{
+	"name": "Updated Name",
+	"email": "updated@example.com"
+}
+```
+
+**Success:** `200 OK`, returning `{ "user": { ... } }` with the updated sanitized user. Possible errors: `400` validation error, `401` authentication error, `404` authenticated user no longer exists, `409` duplicate email, or a shared server error below.
+
+#### `DELETE /api/auth/me`
+
+**Authentication:** Required. Deletes the authenticated account and all documents owned by that account. No request body.
+
+**Success:** `200 OK`
+
+```json
+{ "message": "Account deleted successfully." }
+```
+
+Possible errors: `401` authentication error, `404` authenticated user no longer exists, or a shared server error below. The deleted account's token can no longer authenticate.
 
 ### Document endpoints
 
-All document endpoints require `Authorization: Bearer <token>`. In Postman, set **Authorization** to **Bearer Token** and use the token returned by registration or login. Documents are stored separately in `data/documents.db` and are always scoped to the authenticated user.
+All document endpoints require a Bearer token. Documents are stored separately in `data/documents.db` and are scoped to the authenticated user. A user cannot access another user's documents; attempts to get, update, or delete one return `404` with `Document not found.`
 
-- `POST /api/documents` creates a document. The JSON body requires `name` (1-150 characters) and optionally accepts `completed` (boolean, defaults to `false`). Example body: `{ "name": "Passport", "completed": false }`.
-- `GET /api/documents` lists only the authenticated user's documents.
-- `GET /api/documents/:id` gets one document owned by the authenticated user.
-- `PUT /api/documents/:id` updates `name`, `completed`, or both. Example body: `{ "completed": true }`.
-- `DELETE /api/documents/:id` deletes a document owned by the authenticated user.
+#### `POST /api/documents`
 
-Create and update requests reject other fields, including document IDs and owner IDs. A successful create returns `201` with `{ "document": { "id": "...", "name": "Passport", "completed": false, "createdAt": "...", "updatedAt": "..." } }`. Listing returns `{ "documents": [...] }`; get and update return `{ "document": { ... } }`; delete returns `{ "message": "Document deleted successfully." }`. Invalid IDs return `400`; missing or non-owned documents return `404`.
+**Authentication:** Required. Creates a document owned by the authenticated user.
+
+Required JSON field: `name`. Optional field: `completed` (defaults to `false`).
+
+```json
+{
+	"name": "Passport",
+	"completed": false
+}
+```
+
+**Success:** `201 Created`
+
+```json
+{
+	"document": {
+		"id": "a1b2c3d4e5f6g7h8",
+		"name": "Passport",
+		"completed": false,
+		"createdAt": "2026-10-07T12:00:00.000Z",
+		"updatedAt": "2026-10-07T12:00:00.000Z"
+	}
+}
+```
+
+Possible errors: `400` validation error, `401` authentication error, or a shared request/server error below.
+
+#### `GET /api/documents`
+
+**Authentication:** Required. Lists documents owned by the authenticated user, newest first. No request body.
+
+**Success:** `200 OK`
+
+```json
+{
+	"documents": [
+		{
+			"id": "a1b2c3d4e5f6g7h8",
+			"name": "Passport",
+			"completed": false,
+			"createdAt": "2026-10-07T12:00:00.000Z",
+			"updatedAt": "2026-10-07T12:00:00.000Z"
+		}
+	]
+}
+```
+
+Possible errors: `401` authentication error or a shared server error below.
+
+#### `GET /api/documents/:id`
+
+**Authentication:** Required. Gets one document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters. No request body.
+
+**Success:** `200 OK`, returning `{ "document": { ... } }` with the document shape shown above. Possible errors: `400` invalid document ID, `401` authentication error, `404` document not found, or a shared server error below.
+
+#### `PUT /api/documents/:id`
+
+**Authentication:** Required. Updates one document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters.
+
+Provide at least one of the optional JSON fields `name` or `completed`. Their validation rules are in the summary above; other fields are rejected.
+
+```json
+{ "completed": true }
+```
+
+**Success:** `200 OK`, returning `{ "document": { ... } }` with the updated document. Possible errors: `400` invalid ID or validation error, `401` authentication error, `404` document not found, or a shared request/server error below.
+
+#### `DELETE /api/documents/:id`
+
+**Authentication:** Required. Deletes one document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters. No request body.
+
+**Success:** `200 OK`
+
+```json
+{ "message": "Document deleted successfully." }
+```
+
+Possible errors: `400` invalid document ID, `401` authentication error, `404` document not found, or a shared server error below.
+
+### Error responses
+
+Errors are JSON. Most use `{ "error": "message" }`; validation errors also include a `details` array:
+
+```json
+{
+	"error": "Validation failed.",
+	"details": ["Document name must be between 1 and 150 characters."]
+}
+```
+
+| Status | Meaning and representative response |
+|---|---|
+| `400` | Invalid fields: `{ "error": "Validation failed.", "details": ["..."] }`. Malformed JSON: `{ "error": "Request body must contain valid JSON." }`. Invalid document ID: `{ "error": "Invalid document ID." }`. |
+| `401` | Missing token: `{ "error": "A Bearer token is required." }`. Invalid or expired token: `{ "error": "The token is invalid or expired." }`. |
+| `404` | Unknown API route or unsupported method: `{ "error": "Route not found." }`. Missing or non-owned document: `{ "error": "Document not found." }`. |
+| `409` | Duplicate account email: `{ "error": "An account with that email already exists." }`. |
+| `413` | Request body exceeds the 10 KB JSON limit: `{ "error": "Request body is too large." }`. |
+| `429` | Rate limit exceeded; see rate limiting below. |
+| `500` | Unexpected server error: `{ "error": "An unexpected server error occurred." }`. |
+
+An authenticated account that no longer exists also receives `401` when the token is checked; profile update or deletion can return `404` if the account disappears after that check.
+
+### Rate limiting
+
+Login and registration have independent per-client-IP limits. Each defaults to 5 requests per 15-minute window. Configure each limit with positive integer values using these environment variables:
+
+| Endpoint | Maximum requests | Window in milliseconds |
+|---|---|---|
+| `POST /api/auth/login` | `LOGIN_RATE_LIMIT_MAX` | `LOGIN_RATE_LIMIT_WINDOW_MS` |
+| `POST /api/auth/register` | `REGISTRATION_RATE_LIMIT_MAX` | `REGISTRATION_RATE_LIMIT_WINDOW_MS` |
+
+Exceeding a limit returns `429` with the corresponding JSON error:
+
+```json
+{ "error": "Too many login attempts. Please try again later." }
+```
+
+For registration, the message is `Too many registration attempts. Please try again later.` Standard rate-limit headers are enabled; legacy headers are disabled.
+
+Express `trust proxy` is not enabled by default. Behind a reverse proxy or load balancer, configure trust only for known proxy addresses or a verified hop count that matches the deployment topology. Do not blindly trust forwarded headers: clients able to spoof `X-Forwarded-For` could evade IP-based limits. With proxy trust disabled, requests may all appear to come from the proxy IP. The default in-memory limiter is per process; deployments with multiple instances should configure a shared rate-limit store to enforce one quota across instances.
+
+### Current API limitations
+
+- There is no health-check endpoint.
+- Document listing has no pagination.
+- There is no refresh-token endpoint.
+- There is no logout endpoint.
