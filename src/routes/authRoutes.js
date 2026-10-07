@@ -4,7 +4,8 @@ const jwt = require('jsonwebtoken');
 const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
-const { deleteDocumentsByOwnerId } = require('../models/documentModel');
+const { removeStoredFile } = require('../config/fileStorage');
+const { deleteDocumentsByOwnerId, findDocumentsByOwnerId } = require('../models/documentModel');
 const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
 const {
   createUser,
@@ -130,6 +131,13 @@ async function completeAccountDeletion(userId) {
 
   if (!user.deleting && !await markUserDeletingById(userId)) {
     return false;
+  }
+
+  const documents = await findDocumentsByOwnerId(userId);
+  for (const document of documents) {
+    if (document.storageKey) {
+      await removeStoredFile(document.storageKey);
+    }
   }
 
   await deleteDocumentsByOwnerId(userId);

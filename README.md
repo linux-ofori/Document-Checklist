@@ -27,6 +27,8 @@ In production, expose the API only through an HTTPS-terminating reverse proxy an
 
 The file-backed NeDB databases are intended for one Node.js process using a private persistent data directory; do not share the same database files between clustered processes or instances. On POSIX systems, newly created database files are restricted to the service owner. On Windows, protect the database directory using the service account's inherited filesystem ACLs.
 
+Uploaded document files are stored privately under `data/uploads/` by default. `DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY` can select another private local directory; it is resolved once at startup and is never controlled by request data. Keep that directory persistent and access-restricted.
+
 The Express app applies Helmet security headers before JSON parsing and API routes. Since this backend serves JSON rather than browser pages, Helmet's Content Security Policy header is disabled; a custom CSP is not needed for the API. If browser pages are added to this server later, define a CSP based on their actual scripts, styles, and resources.
 
 ### Run tests
@@ -37,7 +39,7 @@ Run the integration tests with Node's built-in test runner:
 npm test
 ```
 
-The tests use temporary user, document, and application databases under `data/`, a test-only JWT secret, and an ephemeral local port. Test data is removed when the test run finishes; the development databases and `.env` are not used or modified.
+The tests use temporary user, document, and application databases and upload storage under `data/`, a test-only JWT secret, and an ephemeral local port. Test data is removed when the test run finishes; the development databases, uploads, and `.env` are not used or modified.
 
 ## API reference
 
@@ -80,6 +82,7 @@ The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There
 | Application `id` | Server-generated, `app-` prefixed identifier. |
 | Requirement `status` | Required on update; one of `completed`, `in-progress`, or `missing`. |
 | Requirement `documentId` | Optional on update; must identify a document owned by the caller and linked to that application; may be `null` to clear. |
+| Document upload | Multipart upload accepts one PDF, JPG/JPEG, or PNG file, up to and including 5 MiB (5 × 1024 × 1024 bytes). |
 
 Profile updates must include at least one of `name` or `email`. Document updates must include at least one editable document field. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs, owner fields, timestamps, upload metadata, and storage information. Registration and login validate their named fields but do not reject additional fields.
 
@@ -243,7 +246,11 @@ All document endpoints require a Bearer token. Documents are stored separately i
 
 **Authentication:** Required. Creates a document owned by the authenticated user.
 
-Required JSON field: `name`. Optional fields: `completed` (defaults to `false`), `documentType`, `status` (defaults to `in-review`), `applicationId`, `expiresAt`, and `note`. The request must contain a JSON object and may contain only these fields. Optional nullable fields can be omitted or set to `null`. `completed` and `status` are independent: setting either one never changes the other. `status` accepts `draft`, `in-review`, `verified`, `expiring`, or `expired`; clients may set these values, but this API does not implement a reviewer/role system or a review workflow. A non-null `applicationId` must identify an application owned by the authenticated user; it is not validated against application requirements.
+For JSON creation, required field: `name`. Optional fields: `completed` (defaults to `false`), `documentType`, `status` (defaults to `in-review`), `applicationId`, `expiresAt`, and `note`. The JSON request must contain an object and may contain only these fields. Optional nullable fields can be omitted or set to `null`. `completed` and `status` are independent: setting either one never changes the other. `status` accepts `draft`, `in-review`, `verified`, `expiring`, or `expired`; clients may set these values, but this API does not implement a reviewer/role system or a review workflow. A non-null `applicationId` must identify an application owned by the authenticated user; it is not validated against application requirements.
+
+The same endpoint also accepts `multipart/form-data` with exactly one `file` part and optional document metadata fields: `name` (required), `completed`, `documentType`, `status`, `applicationId`, `expiresAt`, and `note`. The multipart request is authenticated like JSON requests; if `applicationId` is present, the application must belong to the caller. File size is limited to 5 MiB (5 × 1024 × 1024 bytes), including a file exactly at that limit. Supported formats are PDF (`.pdf`), JPEG (`.jpg`/`.jpeg`), and PNG (`.png`). The server checks extension, declared MIME type, and file signatures. Unsupported, mismatched, missing, multiple, malformed, or oversized file input is rejected; oversized uploads return `413`, and other upload validation errors return `400`.
+
+File bytes are stored in private local storage under `data/uploads/` by default; the directory can be configured with `DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY`. It is not exposed through static file serving. The original filename is sanitized for display only; the server generates the storage key and calculates `fileSizeKb` and `uploadedAt`. Clients cannot submit file metadata or storage keys, and the public document response does not expose storage keys or filesystem paths. JSON-only document creation remains supported without a file, in which case `fileName`, `fileSizeKb`, and `uploadedAt` are `null`.
 
 ```json
 {
@@ -279,7 +286,7 @@ Required JSON field: `name`. Optional fields: `completed` (defaults to `false`),
 }
 ```
 
-Missing optional metadata is returned as `null`. `fileName`, `fileSizeKb`, and `uploadedAt` are read-only response placeholders, currently always `null`; uploads are not implemented. These fields, file size in bytes, storage keys/paths, IDs, owner fields, and timestamps are rejected if supplied in a request.
+Missing optional metadata is returned as `null`. For JSON-only documents, file metadata remains `null`; multipart uploads populate it from the validated file. These values, file size in bytes, storage keys/paths, IDs, owner fields, and timestamps are rejected if supplied in request metadata.
 
 `GET /api/documents` returns `{ "documents": [...] }` and `GET /api/documents/:id` returns `{ "document": { ... } }`, using this same complete public document representation. List results contain only the authenticated user's documents and are ordered newest first. `PUT /api/documents/:id` accepts partial updates to `name`, `completed`, `documentType`, `status`, `applicationId`, `expiresAt`, and `note`; at least one recognized field is required. Setting either `completed` or `status` does not alter the other. Nullable metadata can be cleared with `null`.
 

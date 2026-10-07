@@ -21,6 +21,9 @@ const applicationsDatabasePath = resolveDatabasePath(
   'DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH',
   'applications.db'
 );
+const uploadsDirectory = path.resolve(
+  process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY || path.join(dataDirectory, 'uploads')
+);
 
 const databasePaths = [
   ['users', usersDatabasePath],
@@ -58,5 +61,6 @@ module.exports = {
   usersDatabasePath,
   documentsDatabasePath,
   applicationsDatabasePath,
+  uploadsDirectory,
   prepareDatabaseFile
 };

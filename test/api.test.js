@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
 
@@ -14,11 +15,13 @@ delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
+process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY = path.join(testDataDirectory, 'uploads');
 process.env.REGISTRATION_RATE_LIMIT_MAX = '20';
 
 const app = require('../src/server');
 const database = require('../src/config/database');
 const documentsDatabase = require('../src/config/documentsDatabase');
+const { uploadsDirectory } = require('../src/config/databasePaths');
 const authRoutes = require('../src/routes/authRoutes');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const { findUserById, markUserDeletingById, toPublicUser } = require('../src/models/userModel');
@@ -64,6 +67,42 @@ async function request(route, { method = 'GET', token, body } = {}) {
   });
   const payload = await response.json();
   return { status: response.status, payload };
+}
+
+async function requestMultipart(route, { token, fields = {}, files = [] } = {}) {
+  const form = new FormData();
+  for (const [name, value] of Object.entries(fields)) {
+    form.append(name, String(value));
+  }
+  for (const file of files) {
+    form.append(file.fieldName || 'file', new Blob([file.buffer], { type: file.type }), file.name);
+  }
+
+  const headers = {};
+  if (token) {
+    headers.authorization = 'Bearer ' + token;
+  }
+  const response = await fetch(`${baseUrl}${route}`, { method: 'POST', headers, body: form });
+  return { status: response.status, payload: await response.json() };
+}
+
+function uploadPdf(token, name, fields = {}) {
+  return requestMultipart('/api/documents', {
+    token,
+    fields: { name, ...fields },
+    files: [{
+      name: `${name}.pdf`,
+      type: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.7\n')
+    }]
+  });
+}
+
+function findStoredDocument(id) {
+  return new Promise((resolve, reject) => {
+    documentsDatabase.findOne({ _id: id }, (error, document) =>
+      error ? reject(error) : resolve(document));
+  });
 }
 
 const publicDocumentFields = [
@@ -876,5 +915,470 @@ test('authentication, account management, and document API', async (t) => {
 
     assert.deepEqual(await findDocumentsByOwnerId(accountId), []);
     assert.equal(await findUserById(accountId), null);
+  });
+
+  await t.test('uploads supported files with server-generated metadata and private storage', async () => {
+    const application = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    assert.equal(application.status, 201);
+    const applicationId = application.payload.application.id;
+
+    const png = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+    png.writeUInt32BE(13, 8);
+    png.write('IHDR', 12, 'ascii');
+    png.writeUInt32BE(1, 16);
+    png.writeUInt32BE(1, 20);
+    const jpeg = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+      0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x00,
+      0xff, 0xd9
+    ]);
+    const fixtures = [
+      { name: '../../passport.pdf', type: 'application/pdf', fileName: 'passport.pdf', buffer: Buffer.from('%PDF-1.7\n') },
+      { name: 'scan.jpg', type: 'image/jpeg', fileName: 'scan.jpg', buffer: jpeg },
+      { name: 'scan.jpeg', type: 'image/jpeg', fileName: 'scan.jpeg', buffer: jpeg },
+      { name: 'scan.png', type: 'image/png', fileName: 'scan.png', buffer: png }
+    ];
+
+    for (const fixture of fixtures) {
+      const response = await requestMultipart('/api/documents', {
+        token: primaryToken,
+        fields: {
+          name: 'Uploaded file',
+          documentType: 'identity-card',
+          applicationId,
+          expiresAt: '2030-01-01',
+          note: 'Multipart metadata',
+          status: 'in-review'
+        },
+        files: [fixture]
+      });
+
+      assert.equal(response.status, 201, JSON.stringify(response.payload));
+      const document = response.payload.document;
+      assert.equal(document.fileName, fixture.fileName);
+      assert.equal(document.fileSizeKb, Math.ceil(fixture.buffer.length / 1024));
+      assert.ok(Number.isFinite(Date.parse(document.uploadedAt)));
+      assert.equal(document.applicationId, applicationId);
+      assert.equal(document.documentType, 'identity-card');
+      assert.equal(Object.hasOwn(document, 'storageKey'), false);
+      assertPublicDocument(document);
+
+      const storedDocument = await findStoredDocument(document.id);
+      assert.match(storedDocument.storageKey, /^[a-f0-9]{64}\.(?:pdf|jpg|jpeg|png)$/);
+      assert.equal(path.isAbsolute(storedDocument.storageKey), false);
+      const storedPath = path.join(uploadsDirectory, storedDocument.storageKey);
+      assert.equal(path.dirname(path.resolve(storedPath)), path.resolve(uploadsDirectory));
+      assert.deepEqual(fs.readFileSync(storedPath), fixture.buffer);
+    }
+
+    const exactLimitBuffer = Buffer.alloc(5 * 1024 * 1024);
+    Buffer.from('%PDF-1.7\n').copy(exactLimitBuffer);
+    const exactLimit = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: { name: 'At the upload limit' },
+      files: [{ name: 'limit.pdf', type: 'application/pdf', buffer: exactLimitBuffer }]
+    });
+    assert.equal(exactLimit.status, 201);
+    assert.equal(exactLimit.payload.document.fileSizeKb, 5120);
+  });
+
+  await t.test('rejects unauthenticated, missing, multiple, malformed, and oversized uploads', async () => {
+    const file = { name: 'valid.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') };
+    const unauthenticated = await requestMultipart('/api/documents', { files: [file] });
+    assert.equal(unauthenticated.status, 401);
+
+    const noFile = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: { name: 'Missing file' }
+    });
+    assert.equal(noFile.status, 400);
+
+    const multipleFiles = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: { name: 'Multiple files' },
+      files: [file, { ...file, name: 'second.pdf' }]
+    });
+    assert.equal(multipleFiles.status, 400);
+
+    const tooLarge = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: { name: 'Oversized file' },
+      files: [{
+        ...file,
+        buffer: Buffer.concat([file.buffer, Buffer.alloc(5 * 1024 * 1024 + 1 - file.buffer.length)])
+      }]
+    });
+    assert.equal(tooLarge.status, 413);
+
+    const malformed = await fetch(`${baseUrl}/api/documents`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer ' + primaryToken,
+        'content-type': 'multipart/form-data; boundary=broken-boundary'
+      },
+      body: '--broken-boundary\r\nContent-Disposition: form-data; name="file"; filename="broken.pdf"\r\n'
+        + 'Content-Type: application/pdf\r\n\r\n%PDF-1.7'
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), {
+      error: 'Validation failed.',
+      details: ['Multipart request is malformed.']
+    });
+  });
+
+  await t.test('rejects unsupported, mismatched, unsafe, or client-controlled upload metadata', async () => {
+    const user = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Upload Other', email: 'upload-other@example.com', password: 'upload-other-password' }
+    });
+    assert.equal(user.status, 201);
+    const foreignApplication = await request('/api/applications', {
+      method: 'POST',
+      token: user.payload.token,
+      body: { processId: 'passport' }
+    });
+    assert.equal(foreignApplication.status, 201);
+
+    const validFile = { name: 'file.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') };
+    for (const file of [
+      { ...validFile, name: 'file.exe' },
+      { ...validFile, name: 'file.pdf', type: 'image/png' },
+      { ...validFile, buffer: Buffer.from('not a PDF') }
+    ]) {
+      const invalid = await requestMultipart('/api/documents', {
+        token: primaryToken,
+        fields: { name: 'Invalid file' },
+        files: [file]
+      });
+      assert.equal(invalid.status, 400);
+      assert.equal(invalid.payload.error, 'Validation failed.');
+    }
+
+    const foreignReference = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: { name: 'Foreign application', applicationId: foreignApplication.payload.application.id },
+      files: [validFile]
+    });
+    assert.equal(foreignReference.status, 404);
+    assert.deepEqual(foreignReference.payload, { error: 'Application not found.' });
+
+    for (const field of ['fileName', 'fileSizeKb', 'uploadedAt', 'storageKey', 'storagePath']) {
+      const forgedMetadata = await requestMultipart('/api/documents', {
+        token: primaryToken,
+        fields: { name: 'Forged metadata', [field]: 'client-value' },
+        files: [validFile]
+      });
+      assert.equal(forgedMetadata.status, 400, `${field} must remain server-controlled`);
+    }
+  });
+
+  await t.test('deletes uploaded files with documents and preserves metadata-only deletion', async () => {
+    const uploaded = await uploadPdf(primaryToken, 'Delete uploaded document');
+    assert.equal(uploaded.status, 201);
+    const fileDocument = await findStoredDocument(uploaded.payload.document.id);
+    const filePath = path.join(uploadsDirectory, fileDocument.storageKey);
+    assert.equal(fs.existsSync(filePath), true);
+
+    const deletedFileDocument = await request(`/api/documents/${fileDocument._id}`, {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(deletedFileDocument.status, 200);
+    assert.equal(fs.existsSync(filePath), false);
+    assert.equal(await findStoredDocument(fileDocument._id), null);
+
+    const metadataOnly = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: { name: 'Delete metadata-only document' }
+    });
+    assert.equal(metadataOnly.status, 201);
+    const deletedMetadataOnly = await request(`/api/documents/${metadataOnly.payload.document.id}`, {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(deletedMetadataOnly.status, 200);
+    assert.equal(await findStoredDocument(metadataOnly.payload.document.id), null);
+  });
+
+  await t.test('deletes documents whose file is missing without affecting other files', async () => {
+    const missingFileUpload = await uploadPdf(primaryToken, 'Already missing file');
+    const retainedFileUpload = await uploadPdf(primaryToken, 'Retained unrelated file');
+    assert.equal(missingFileUpload.status, 201);
+    assert.equal(retainedFileUpload.status, 201);
+
+    const missingDocument = await findStoredDocument(missingFileUpload.payload.document.id);
+    const retainedDocument = await findStoredDocument(retainedFileUpload.payload.document.id);
+    const missingPath = path.join(uploadsDirectory, missingDocument.storageKey);
+    const retainedPath = path.join(uploadsDirectory, retainedDocument.storageKey);
+    await fsPromises.unlink(missingPath);
+
+    const deleted = await request(`/api/documents/${missingDocument._id}`, {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(await findStoredDocument(missingDocument._id), null);
+    assert.equal(fs.existsSync(retainedPath), true);
+  });
+
+  await t.test('document deletion cannot remove another user\'s uploaded file', async () => {
+    const owner = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'File Owner', email: 'file-owner@example.com', password: 'file-owner-password' }
+    });
+    const other = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Other File Owner', email: 'other-file-owner@example.com', password: 'other-file-owner-password' }
+    });
+    assert.equal(owner.status, 201);
+    assert.equal(other.status, 201);
+
+    const ownerUpload = await uploadPdf(owner.payload.token, 'Owner uploaded file');
+    const otherUpload = await uploadPdf(other.payload.token, 'Other user uploaded file');
+    assert.equal(ownerUpload.status, 201);
+    assert.equal(otherUpload.status, 201);
+    const ownerDocument = await findStoredDocument(ownerUpload.payload.document.id);
+    const otherDocument = await findStoredDocument(otherUpload.payload.document.id);
+    const ownerPath = path.join(uploadsDirectory, ownerDocument.storageKey);
+    const otherPath = path.join(uploadsDirectory, otherDocument.storageKey);
+
+    const deleted = await request(`/api/documents/${ownerDocument._id}`, {
+      method: 'DELETE',
+      token: owner.payload.token
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(fs.existsSync(ownerPath), false);
+    assert.equal(fs.existsSync(otherPath), true);
+  });
+
+  await t.test('clears requirement references when deleting an uploaded document', async () => {
+    const application = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    assert.equal(application.status, 201);
+
+    const uploaded = await uploadPdf(primaryToken, 'Linked identity document', {
+      documentType: 'identity-card',
+      applicationId: application.payload.application.id
+    });
+    assert.equal(uploaded.status, 201);
+    const linked = await request(
+      `/api/applications/${application.payload.application.id}/requirements/identity-card`,
+      {
+        method: 'PATCH',
+        token: primaryToken,
+        body: { status: 'completed', documentId: uploaded.payload.document.id }
+      }
+    );
+    assert.equal(linked.status, 200);
+
+    const fileDocument = await findStoredDocument(uploaded.payload.document.id);
+    const filePath = path.join(uploadsDirectory, fileDocument.storageKey);
+    const deleted = await request(`/api/documents/${fileDocument._id}`, {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(fs.existsSync(filePath), false);
+
+    const retrievedApplication = await request(
+      `/api/applications/${application.payload.application.id}`,
+      { token: primaryToken }
+    );
+    assert.equal(retrievedApplication.status, 200);
+    const requirement = retrievedApplication.payload.application.requirements
+      .find((entry) => entry.key === 'identity-card');
+    assert.equal(requirement.status, 'missing');
+    assert.equal(requirement.documentId, null);
+    assert.equal(requirement.completedAt, null);
+  });
+
+  await t.test('does not delete a document or its requirement reference when file removal fails', async () => {
+    const application = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    assert.equal(application.status, 201);
+
+    const uploaded = await uploadPdf(primaryToken, 'File deletion failure document', {
+      documentType: 'identity-card',
+      applicationId: application.payload.application.id
+    });
+    assert.equal(uploaded.status, 201);
+    const linked = await request(
+      `/api/applications/${application.payload.application.id}/requirements/identity-card`,
+      {
+        method: 'PATCH',
+        token: primaryToken,
+        body: { status: 'completed', documentId: uploaded.payload.document.id }
+      }
+    );
+    assert.equal(linked.status, 200);
+
+    const fileDocument = await findStoredDocument(uploaded.payload.document.id);
+    const filePath = path.join(uploadsDirectory, fileDocument.storageKey);
+    const originalUnlink = fsPromises.unlink;
+    const originalConsoleError = console.error;
+    fsPromises.unlink = async () => {
+      throw Object.assign(new Error('Injected file deletion failure.'), { code: 'EACCES' });
+    };
+    console.error = () => {};
+
+    try {
+      const failedDeletion = await request(`/api/documents/${fileDocument._id}`, {
+        method: 'DELETE',
+        token: primaryToken
+      });
+      assert.equal(failedDeletion.status, 500);
+      assert.deepEqual(failedDeletion.payload, { error: 'An unexpected server error occurred.' });
+    } finally {
+      fsPromises.unlink = originalUnlink;
+      console.error = originalConsoleError;
+    }
+
+    assert.ok(await findStoredDocument(fileDocument._id));
+    assert.equal(fs.existsSync(filePath), true);
+    const stillLinked = await request(
+      `/api/applications/${application.payload.application.id}`,
+      { token: primaryToken }
+    );
+    const requirement = stillLinked.payload.application.requirements
+      .find((entry) => entry.key === 'identity-card');
+    assert.equal(requirement.documentId, fileDocument._id);
+  });
+
+  await t.test('account deletion removes only owned files and tolerates missing files', async () => {
+    const accountA = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Upload Cleanup A', email: 'upload-cleanup-a@example.com', password: 'upload-cleanup-a-pass' }
+    });
+    const accountB = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Upload Cleanup B', email: 'upload-cleanup-b@example.com', password: 'upload-cleanup-b-pass' }
+    });
+    assert.equal(accountA.status, 201);
+    assert.equal(accountB.status, 201);
+
+    const accountAUpload = await uploadPdf(accountA.payload.token, 'Account A file to remove');
+    const accountAMissingUpload = await uploadPdf(accountA.payload.token, 'Account A already missing file');
+    const accountBUpload = await uploadPdf(accountB.payload.token, 'Account B retained file');
+    assert.equal(accountAUpload.status, 201);
+    assert.equal(accountAMissingUpload.status, 201);
+    assert.equal(accountBUpload.status, 201);
+
+    const accountADocument = await findStoredDocument(accountAUpload.payload.document.id);
+    const accountAMissingDocument = await findStoredDocument(accountAMissingUpload.payload.document.id);
+    const accountBDocument = await findStoredDocument(accountBUpload.payload.document.id);
+    const accountAPath = path.join(uploadsDirectory, accountADocument.storageKey);
+    const accountAMissingPath = path.join(uploadsDirectory, accountAMissingDocument.storageKey);
+    const accountBPath = path.join(uploadsDirectory, accountBDocument.storageKey);
+    await fsPromises.unlink(accountAMissingPath);
+
+    const metadataOnly = await request('/api/documents', {
+      method: 'POST',
+      token: accountA.payload.token,
+      body: { name: 'Account A metadata-only document' }
+    });
+    assert.equal(metadataOnly.status, 201);
+
+    const deleted = await request('/api/auth/me', {
+      method: 'DELETE',
+      token: accountA.payload.token
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal(fs.existsSync(accountAPath), false);
+    assert.equal(fs.existsSync(accountAMissingPath), false);
+    assert.equal(fs.existsSync(accountBPath), true);
+    assert.deepEqual(await findDocumentsByOwnerId(accountA.payload.user.id), []);
+    assert.deepEqual((await findDocumentsByOwnerId(accountB.payload.user.id)).map((document) => document._id), [
+      accountBDocument._id
+    ]);
+  });
+
+  await t.test('does not clean up account records when an owned file cannot be removed', async () => {
+    const account = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Account File Failure', email: 'account-file-failure@example.com', password: 'account-file-failure-pass' }
+    });
+    assert.equal(account.status, 201);
+
+    const uploaded = await uploadPdf(account.payload.token, 'Account file failure');
+    const metadataOnly = await request('/api/documents', {
+      method: 'POST',
+      token: account.payload.token,
+      body: { name: 'Account metadata-only failure' }
+    });
+    assert.equal(uploaded.status, 201);
+    assert.equal(metadataOnly.status, 201);
+    const fileDocument = await findStoredDocument(uploaded.payload.document.id);
+    const filePath = path.join(uploadsDirectory, fileDocument.storageKey);
+    const originalUnlink = fsPromises.unlink;
+    const originalConsoleError = console.error;
+    fsPromises.unlink = async () => {
+      throw Object.assign(new Error('Injected account file deletion failure.'), { code: 'EACCES' });
+    };
+    console.error = () => {};
+
+    try {
+      const failedDeletion = await request('/api/auth/me', {
+        method: 'DELETE',
+        token: account.payload.token
+      });
+      assert.equal(failedDeletion.status, 500);
+      assert.deepEqual(failedDeletion.payload, { error: 'An unexpected server error occurred.' });
+    } finally {
+      fsPromises.unlink = originalUnlink;
+      console.error = originalConsoleError;
+    }
+
+    assert.ok(await findUserById(account.payload.user.id));
+    assert.equal((await findUserById(account.payload.user.id)).deleting, true);
+    assert.equal((await findDocumentsByOwnerId(account.payload.user.id)).length, 2);
+    assert.equal(fs.existsSync(filePath), true);
+
+    const retriedDeletion = await request('/api/auth/me', {
+      method: 'DELETE',
+      token: account.payload.token
+    });
+    assert.equal(retriedDeletion.status, 200);
+    assert.deepEqual(await findDocumentsByOwnerId(account.payload.user.id), []);
+    assert.equal(await findUserById(account.payload.user.id), null);
+    assert.equal(fs.existsSync(filePath), false);
+  });
+
+  await t.test('cleans stored files if document persistence fails', async () => {
+    const file = { name: 'database-failure.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') };
+    const existingFiles = new Set(fs.existsSync(uploadsDirectory) ? fs.readdirSync(uploadsDirectory) : []);
+    const originalInsert = documentsDatabase.insert;
+    const originalConsoleError = console.error;
+    documentsDatabase.insert = (_document, callback) => callback(new Error('Injected document insert failure.'));
+    console.error = () => {};
+
+    try {
+      const failure = await requestMultipart('/api/documents', {
+        token: primaryToken,
+        fields: { name: 'Database failure' },
+        files: [file]
+      });
+      assert.equal(failure.status, 500);
+      assert.deepEqual(await findDocumentsByOwnerId(registration.payload.user.id)
+        .then((documents) => documents.filter((document) => document.name === 'Database failure')), []);
+    } finally {
+      documentsDatabase.insert = originalInsert;
+      console.error = originalConsoleError;
+    }
+
+    const filesAfterFailure = new Set(fs.existsSync(uploadsDirectory) ? fs.readdirSync(uploadsDirectory) : []);
+    assert.deepEqual(filesAfterFailure, existingFiles);
   });
 });

@@ -1,7 +1,13 @@
 const express = require('express');
+const multer = require('multer');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
 const { findUserById } = require('../models/userModel');
+const {
+  removeStoredFile,
+  storeUploadedFile,
+  validateUploadedFile
+} = require('../config/fileStorage');
 const {
   findApplicationById,
   findDocumentRequirementReferences,
@@ -17,6 +23,17 @@ const {
 } = require('../models/documentModel');
 
 const router = express.Router();
+const multipartParser = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 1,
+    fields: 7,
+    parts: 8,
+    fieldNameSize: 100,
+    fieldSize: 10 * 1024
+  }
+});
 const documentTypes = new Set([
   'identity-card',
   'photograph',
@@ -160,14 +177,68 @@ function hasValidDocumentId(id) {
   return documentIdPattern.test(id);
 }
 
+function parseMultipartDocument(request, response, next) {
+  if (!request.is('multipart/form-data')) {
+    return next();
+  }
+
+  return multipartParser.single('file')(request, response, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return response.status(413).json({ error: 'Uploaded file exceeds the 5 MiB limit.' });
+    }
+    if (error instanceof multer.MulterError) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['Multipart request contains too many files, fields, or oversized fields.']
+      });
+    }
+
+    return response.status(400).json({
+      error: 'Validation failed.',
+      details: ['Multipart request is malformed.']
+    });
+  });
+}
+
 router.use(requireAuth);
 
-router.post('/', async (request, response, next) => {
+router.post('/', parseMultipartDocument, async (request, response, next) => {
   try {
-    const input = validateDocumentInput(request.body, false);
+    const isMultipart = request.is('multipart/form-data');
+    if (isMultipart && !request.file) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['Exactly one file is required for multipart document creation.']
+      });
+    }
+
+    const body = { ...(request.body || {}) };
+    if (isMultipart && Object.hasOwn(body, 'completed')) {
+      if (body.completed === 'true') {
+        body.completed = true;
+      } else if (body.completed === 'false') {
+        body.completed = false;
+      }
+    }
+    const input = validateDocumentInput(body, false);
 
     if (input.errors.length > 0) {
       return response.status(400).json({ error: 'Validation failed.', details: input.errors });
+    }
+
+    let validatedFile;
+    if (request.file) {
+      validatedFile = validateUploadedFile(request.file);
+      if (validatedFile.error) {
+        return response.status(400).json({
+          error: 'Validation failed.',
+          details: [validatedFile.error]
+        });
+      }
     }
 
     const result = await withAccountOperationLock(request.user.id, async () => {
@@ -183,16 +254,40 @@ router.post('/', async (request, response, next) => {
         }
       }
 
-      const document = await createDocument({
-        ownerId: request.user.id,
-        name: input.updates.name,
-        completed: input.updates.completed === undefined ? false : input.updates.completed,
-        documentType: input.updates.documentType,
-        status: input.updates.status,
-        applicationId: input.updates.applicationId,
-        expiresAt: input.updates.expiresAt,
-        note: input.updates.note
-      });
+      const fileMetadata = request.file
+        ? {
+          fileName: validatedFile.fileName,
+          fileSizeKb: Math.ceil(request.file.size / 1024),
+          uploadedAt: new Date().toISOString()
+        }
+        : null;
+      const storageKey = request.file
+        ? await storeUploadedFile(request.file.buffer, validatedFile.extension)
+        : null;
+
+      let document;
+      try {
+        document = await createDocument({
+          ownerId: request.user.id,
+          name: input.updates.name,
+          completed: input.updates.completed === undefined ? false : input.updates.completed,
+          documentType: input.updates.documentType,
+          status: input.updates.status,
+          applicationId: input.updates.applicationId,
+          expiresAt: input.updates.expiresAt,
+          note: input.updates.note,
+          fileMetadata: storageKey ? { ...fileMetadata, storageKey } : undefined
+        });
+      } catch (error) {
+        if (storageKey) {
+          try {
+            await removeStoredFile(storageKey);
+          } catch (cleanupError) {
+            console.error('Unable to remove uploaded file after document creation failed.', cleanupError);
+          }
+        }
+        throw error;
+      }
       return { kind: 'created', document };
     });
 
@@ -320,6 +415,9 @@ router.delete('/:id', async (request, response, next) => {
         return false;
       }
 
+      if (document.storageKey) {
+        await removeStoredFile(document.storageKey);
+      }
       await clearDocumentRequirementReferences(request.user.id, request.params.id);
       return deleteDocumentById(request.params.id, request.user.id);
     });

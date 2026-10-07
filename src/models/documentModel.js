@@ -14,9 +14,9 @@ function toPublicDocument(document) {
     documentType: document.documentType ?? null,
     status: document.status ?? DOCUMENT_STATUS_DEFAULT,
     applicationId: document.applicationId ?? null,
-    fileName: null,
-    fileSizeKb: null,
-    uploadedAt: null,
+    fileName: document.fileName ?? null,
+    fileSizeKb: document.fileSizeKb ?? null,
+    uploadedAt: document.uploadedAt ?? null,
     expiresAt: document.expiresAt ?? null,
     note: document.note ?? null,
     createdAt: document.createdAt,
@@ -32,23 +32,29 @@ function createDocument({
   status = DOCUMENT_STATUS_DEFAULT,
   applicationId = null,
   expiresAt = null,
-  note = null
+  note = null,
+  fileMetadata
 }) {
   const timestamp = new Date().toISOString();
 
+  const document = {
+    ownerId,
+    name,
+    completed,
+    documentType,
+    status,
+    applicationId,
+    expiresAt,
+    note,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  if (fileMetadata) {
+    Object.assign(document, fileMetadata);
+  }
+
   return new Promise((resolve, reject) => {
-    database.insert({
-      ownerId,
-      name,
-      completed,
-      documentType,
-      status,
-      applicationId,
-      expiresAt,
-      note,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    }, (error, document) => error ? reject(error) : resolve(document));
+    database.insert(document, (error, inserted) => error ? reject(error) : resolve(inserted));
   });
 }
 
