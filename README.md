@@ -328,6 +328,12 @@ Possible errors: `401` authentication error or a shared server error below.
 
 **Success:** `200 OK`, returning `{ "document": { ... } }` with the document shape shown above. Possible errors: `400` invalid document ID, `401` authentication error, `404` document not found, or a shared server error below.
 
+#### `GET /api/documents/:id/file`
+
+**Authentication:** Required. Retrieves the stored file for a document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters. No request body.
+
+**Success:** `200 OK` with the file bytes, a PDF/JPEG/PNG `Content-Type`, and `Content-Disposition: inline` using the stored display filename. The internal storage key and filesystem path are not returned. Metadata-only documents and documents whose physical file is missing return `404 Document file not found.` A non-owned document is also reported as not found.
+
 #### `PUT /api/documents/:id`
 
 **Authentication:** Required. Updates one document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters.
@@ -339,6 +345,12 @@ Provide at least one editable field: `name`, `completed`, `documentType`, `statu
 ```
 
 **Success:** `200 OK`, returning `{ "document": { ... } }` with the updated document. Possible errors: `400` invalid ID or validation error, `401` authentication error, `404` document not found, or a shared request/server error below.
+
+#### `PUT /api/documents/:id/file`
+
+**Authentication:** Required. Replaces the stored file for a document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters. Send `multipart/form-data` containing exactly one `file` part and no document metadata fields. The upload uses the same supported formats, signature checks, and 5 MiB maximum as document creation.
+
+**Success:** `200 OK`, returning `{ "document": { ... } }`. The document ID and all non-file metadata remain unchanged; `fileName`, `fileSizeKb`, and `uploadedAt` are generated from the replacement file. The old file is removed after the database record points to the new file. If database updating fails, the previous file remains authoritative and the staged file is cleaned up where possible. If removing the old file fails after a successful update, the replacement still succeeds and the document remains pointed at the new file; the cleanup failure is logged.
 
 #### `DELETE /api/documents/:id`
 
@@ -367,7 +379,7 @@ Errors are JSON. Most use `{ "error": "message" }`; validation errors also inclu
 |---|---|
 | `400` | Invalid fields: `{ "error": "Validation failed.", "details": ["..."] }`. Malformed JSON: `{ "error": "Request body must contain valid JSON." }`. Invalid document ID: `{ "error": "Invalid document ID." }`. |
 | `401` | Missing token: `{ "error": "A Bearer token is required." }`. Invalid or expired token: `{ "error": "The token is invalid or expired." }`. |
-| `404` | Unknown API route or unsupported method: `{ "error": "Route not found." }`. Missing or non-owned document: `{ "error": "Document not found." }`. |
+| `404` | Unknown API route or unsupported method: `{ "error": "Route not found." }`. Missing or non-owned document: `{ "error": "Document not found." }`. Missing file content: `{ "error": "Document file not found." }`. |
 | `409` | Duplicate account email: `{ "error": "An account with that email already exists." }`. |
 | `413` | Request body exceeds the 10 KB JSON limit: `{ "error": "Request body is too large." }`. |
 | `429` | Rate limit exceeded; see rate limiting below. |

@@ -97,6 +97,31 @@ function updateDocumentById(id, ownerId, documentUpdates) {
   });
 }
 
+function updateDocumentFileById(id, ownerId, fileMetadata) {
+  const updates = {
+    storageKey: fileMetadata.storageKey,
+    fileName: fileMetadata.fileName,
+    fileSizeKb: fileMetadata.fileSizeKb,
+    uploadedAt: fileMetadata.uploadedAt,
+    updatedAt: new Date().toISOString()
+  };
+
+  return new Promise((resolve, reject) => {
+    database.update(
+      { _id: id, ownerId },
+      { $set: updates },
+      { returnUpdatedDocs: true },
+      (error, count, document) => {
+        if (error) {
+          return reject(error);
+        }
+
+        return resolve(count > 0 ? document : null);
+      }
+    );
+  });
+}
+
 function deleteDocumentById(id, ownerId) {
   return new Promise((resolve, reject) => {
     database.remove({ _id: id, ownerId }, {}, (error, count) => error ? reject(error) : resolve(count > 0));
@@ -116,5 +141,6 @@ module.exports = {
   findDocumentById,
   findDocumentsByOwnerId,
   toPublicDocument,
+  updateDocumentFileById,
   updateDocumentById
 };

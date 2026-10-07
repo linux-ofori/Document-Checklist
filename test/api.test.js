@@ -69,7 +69,7 @@ async function request(route, { method = 'GET', token, body } = {}) {
   return { status: response.status, payload };
 }
 
-async function requestMultipart(route, { token, fields = {}, files = [] } = {}) {
+async function requestMultipart(route, { method = 'POST', token, fields = {}, files = [] } = {}) {
   const form = new FormData();
   for (const [name, value] of Object.entries(fields)) {
     form.append(name, String(value));
@@ -82,8 +82,40 @@ async function requestMultipart(route, { token, fields = {}, files = [] } = {}) 
   if (token) {
     headers.authorization = 'Bearer ' + token;
   }
-  const response = await fetch(`${baseUrl}${route}`, { method: 'POST', headers, body: form });
+  const response = await fetch(`${baseUrl}${route}`, { method, headers, body: form });
   return { status: response.status, payload: await response.json() };
+}
+
+async function requestFile(route, token) {
+  const headers = {};
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(`${baseUrl}${route}`, { headers });
+  return {
+    status: response.status,
+    headers: response.headers,
+    body: Buffer.from(await response.arrayBuffer())
+  };
+}
+
+function validJpeg() {
+  return Buffer.from([
+    0xff, 0xd8,
+    0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+    0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x00,
+    0xff, 0xd9
+  ]);
+}
+
+function validPng() {
+  const png = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+  png.writeUInt32BE(13, 8);
+  png.write('IHDR', 12, 'ascii');
+  png.writeUInt32BE(1, 16);
+  png.writeUInt32BE(1, 20);
+  return png;
 }
 
 function uploadPdf(token, name, fields = {}) {
@@ -1076,6 +1108,418 @@ test('authentication, account management, and document API', async (t) => {
       });
       assert.equal(forgedMetadata.status, 400, `${field} must remain server-controlled`);
     }
+  });
+
+  await t.test('retrieves uploaded files only for their owner with safe inline headers', async () => {
+    const fixtures = [
+      {
+        name: 'retrieve-pdf.pdf',
+        type: 'application/pdf',
+        contentType: 'application/pdf',
+        buffer: Buffer.from('%PDF-1.7\nretrieval')
+      },
+      {
+        name: 'retrieve-jpeg.jpg',
+        type: 'image/jpeg',
+        contentType: 'image/jpeg',
+        buffer: validJpeg()
+      },
+      {
+        name: 'retrieve-jpeg.jpeg',
+        type: 'image/jpeg',
+        contentType: 'image/jpeg',
+        buffer: validJpeg()
+      },
+      {
+        name: 'retrieve-png.png',
+        type: 'image/png',
+        contentType: 'image/png',
+        buffer: validPng()
+      }
+    ];
+
+    const uploadedDocuments = [];
+    for (const fixture of fixtures) {
+      const uploaded = await requestMultipart('/api/documents', {
+        token: primaryToken,
+        fields: { name: fixture.name },
+        files: [fixture]
+      });
+      assert.equal(uploaded.status, 201);
+      uploadedDocuments.push({ ...fixture, document: uploaded.payload.document });
+
+      const retrieved = await requestFile(
+        `/api/documents/${uploaded.payload.document.id}/file`,
+        primaryToken
+      );
+      assert.equal(retrieved.status, 200);
+      assert.equal(retrieved.headers.get('content-type'), fixture.contentType);
+      assert.match(retrieved.headers.get('content-disposition'), /^inline;/);
+      assert.deepEqual(retrieved.body, fixture.buffer);
+      assert.doesNotMatch(retrieved.headers.get('content-disposition'), /[\r\n]/);
+      assert.doesNotMatch(retrieved.headers.get('content-disposition'), /storageKey|uploads/i);
+    }
+
+    const encodedNameUpload = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: { name: 'Encoded filename' },
+      files: [{
+        name: 'résumé "final".pdf',
+        type: 'application/pdf',
+        buffer: Buffer.from('%PDF-1.7\nfilename')
+      }]
+    });
+    assert.equal(encodedNameUpload.status, 201);
+    const encodedNameResponse = await requestFile(
+      `/api/documents/${encodedNameUpload.payload.document.id}/file`,
+      primaryToken
+    );
+    assert.equal(encodedNameResponse.status, 200);
+    assert.match(
+      encodedNameResponse.headers.get('content-disposition'),
+      /filename\*=UTF-8''r%C3%A9sum%C3%A9%20%22final%22\.pdf/
+    );
+
+    const otherUser = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Retrieval Other', email: 'retrieval-other@example.com', password: 'retrieval-other-password' }
+    });
+    assert.equal(otherUser.status, 201);
+    const foreignDocument = uploadedDocuments[0].document;
+    const manipulatedKey = await requestFile(
+      `/api/documents/${foreignDocument.id}/file?storageKey=../../users.db`,
+      primaryToken
+    );
+    assert.equal(manipulatedKey.status, 200);
+    assert.deepEqual(manipulatedKey.body, fixtures[0].buffer);
+    const foreign = await requestFile(
+      `/api/documents/${foreignDocument.id}/file`,
+      otherUser.payload.token
+    );
+    assert.equal(foreign.status, 404);
+    assert.deepEqual(JSON.parse(foreign.body.toString()), { error: 'Document file not found.' });
+
+    const unauthenticated = await requestFile(`/api/documents/${foreignDocument.id}/file`);
+    assert.equal(unauthenticated.status, 401);
+    assert.deepEqual(JSON.parse(unauthenticated.body.toString()), { error: 'A Bearer token is required.' });
+
+    const metadataOnly = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: { name: 'No physical file' }
+    });
+    assert.equal(metadataOnly.status, 201);
+    const noFile = await requestFile(
+      `/api/documents/${metadataOnly.payload.document.id}/file`,
+      primaryToken
+    );
+    assert.equal(noFile.status, 404);
+    assert.deepEqual(JSON.parse(noFile.body.toString()), { error: 'Document file not found.' });
+
+    const missingFileDocument = await findStoredDocument(foreignDocument.id);
+    await fsPromises.unlink(path.join(uploadsDirectory, missingFileDocument.storageKey));
+    const missingPhysicalFile = await requestFile(
+      `/api/documents/${foreignDocument.id}/file`,
+      primaryToken
+    );
+    assert.equal(missingPhysicalFile.status, 404);
+    assert.deepEqual(
+      JSON.parse(missingPhysicalFile.body.toString()),
+      { error: 'Document file not found.' }
+    );
+
+    const invalidId = await requestFile('/api/documents/%2e%2e%2fusers.db/file', primaryToken);
+    assert.equal(invalidId.status, 400);
+    assert.deepEqual(JSON.parse(invalidId.body.toString()), { error: 'Invalid document ID.' });
+
+    for (const document of uploadedDocuments.slice(1)) {
+      const stored = await findStoredDocument(document.document.id);
+      await fsPromises.unlink(path.join(uploadsDirectory, stored.storageKey));
+    }
+    const encodedNameStored = await findStoredDocument(encodedNameUpload.payload.document.id);
+    await fsPromises.unlink(path.join(uploadsDirectory, encodedNameStored.storageKey));
+  });
+
+  await t.test('replaces a document file without changing document or requirement relationships', async () => {
+    const application = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    assert.equal(application.status, 201);
+    const applicationId = application.payload.application.id;
+    const uploaded = await requestMultipart('/api/documents', {
+      token: primaryToken,
+      fields: {
+        name: 'Replace this ID',
+        completed: 'true',
+        documentType: 'identity-card',
+        status: 'verified',
+        applicationId,
+        expiresAt: '2031-04-05',
+        note: 'Preserve this metadata'
+      },
+      files: [{
+        name: 'old-copy.pdf',
+        type: 'application/pdf',
+        buffer: Buffer.from('%PDF-1.7\nold copy')
+      }]
+    });
+    assert.equal(uploaded.status, 201);
+    const documentId = uploaded.payload.document.id;
+    const oldRecord = await findStoredDocument(documentId);
+    const oldPath = path.join(uploadsDirectory, oldRecord.storageKey);
+
+    const link = await request(`/api/applications/${applicationId}/requirements/identity-card`, {
+      method: 'PATCH',
+      token: primaryToken,
+      body: { status: 'completed', documentId }
+    });
+    assert.equal(link.status, 200);
+
+    const newBytes = Buffer.from('%PDF-1.7\nreplacement bytes');
+    const replaced = await requestMultipart(`/api/documents/${documentId}/file`, {
+      method: 'PUT',
+      token: primaryToken,
+      files: [{ name: 'new-copy.pdf', type: 'application/pdf', buffer: newBytes }]
+    });
+    assert.equal(replaced.status, 200, JSON.stringify(replaced.payload));
+    assert.equal(replaced.payload.document.id, documentId);
+    assert.equal(replaced.payload.document.name, oldRecord.name);
+    assert.equal(replaced.payload.document.completed, oldRecord.completed);
+    assert.equal(replaced.payload.document.applicationId, oldRecord.applicationId);
+    assert.equal(replaced.payload.document.documentType, oldRecord.documentType);
+    assert.equal(replaced.payload.document.status, oldRecord.status);
+    assert.equal(replaced.payload.document.note, oldRecord.note);
+    assert.equal(replaced.payload.document.expiresAt, oldRecord.expiresAt);
+    assert.equal(replaced.payload.document.fileName, 'new-copy.pdf');
+    assert.equal(replaced.payload.document.fileSizeKb, Math.ceil(newBytes.length / 1024));
+    assert.ok(Number.isFinite(Date.parse(replaced.payload.document.uploadedAt)));
+    assert.equal(Object.hasOwn(replaced.payload.document, 'storageKey'), false);
+
+    const newRecord = await findStoredDocument(documentId);
+    assert.notEqual(newRecord.storageKey, oldRecord.storageKey);
+    assert.equal(fs.existsSync(oldPath), false);
+    assert.deepEqual(fs.readFileSync(path.join(uploadsDirectory, newRecord.storageKey)), newBytes);
+
+    const applicationAfter = await request(`/api/applications/${applicationId}`, { token: primaryToken });
+    const requirement = applicationAfter.payload.application.requirements
+      .find((entry) => entry.key === 'identity-card');
+    assert.equal(requirement.documentId, documentId);
+    assert.equal(requirement.status, 'completed');
+  });
+
+  await t.test('replacement can add a file to a metadata-only document', async () => {
+    const created = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: {
+        name: 'Metadata-only until now',
+        completed: true,
+        documentType: 'other',
+        status: 'draft',
+        applicationId: null,
+        expiresAt: '2032-06-07',
+        note: 'Keep all existing data'
+      }
+    });
+    assert.equal(created.status, 201);
+    const original = await findStoredDocument(created.payload.document.id);
+    assert.equal(original.storageKey, undefined);
+
+    const bytes = Buffer.from('%PDF-1.7\nfirst file');
+    const replaced = await requestMultipart(`/api/documents/${original._id}/file`, {
+      method: 'PUT',
+      token: primaryToken,
+      files: [{ name: 'first-file.pdf', type: 'application/pdf', buffer: bytes }]
+    });
+    assert.equal(replaced.status, 200);
+    assert.equal(replaced.payload.document.id, original._id);
+    assert.equal(replaced.payload.document.name, original.name);
+    assert.equal(replaced.payload.document.completed, original.completed);
+    assert.equal(replaced.payload.document.documentType, original.documentType);
+    assert.equal(replaced.payload.document.status, original.status);
+    assert.equal(replaced.payload.document.applicationId, original.applicationId);
+    assert.equal(replaced.payload.document.expiresAt, original.expiresAt);
+    assert.equal(replaced.payload.document.note, original.note);
+    assert.equal(replaced.payload.document.fileName, 'first-file.pdf');
+
+    const updated = await findStoredDocument(original._id);
+    assert.match(updated.storageKey, /^[a-f0-9]{64}\.pdf$/);
+    assert.deepEqual(fs.readFileSync(path.join(uploadsDirectory, updated.storageKey)), bytes);
+  });
+
+  await t.test('rejects invalid, oversized, missing, and multiple replacement files without changing the old file', async () => {
+    const uploaded = await uploadPdf(primaryToken, 'Keep on invalid replacement');
+    assert.equal(uploaded.status, 201);
+    const original = await findStoredDocument(uploaded.payload.document.id);
+    const originalPath = path.join(uploadsDirectory, original.storageKey);
+
+    for (const invalidFile of [
+      { name: 'wrong.txt', type: 'text/plain', buffer: Buffer.from('text') },
+      { name: 'wrong-mime.pdf', type: 'image/png', buffer: Buffer.from('%PDF-1.7\n') },
+      { name: 'wrong-signature.pdf', type: 'application/pdf', buffer: Buffer.from('not pdf') }
+    ]) {
+      const rejected = await requestMultipart(`/api/documents/${original._id}/file`, {
+        method: 'PUT',
+        token: primaryToken,
+        files: [invalidFile]
+      });
+      assert.equal(rejected.status, 400);
+    }
+
+    const oversizedBytes = Buffer.alloc(5 * 1024 * 1024 + 1);
+    Buffer.from('%PDF-1.7\n').copy(oversizedBytes);
+    const oversized = await requestMultipart(`/api/documents/${original._id}/file`, {
+      method: 'PUT',
+      token: primaryToken,
+      files: [{ name: 'oversized.pdf', type: 'application/pdf', buffer: oversizedBytes }]
+    });
+    assert.equal(oversized.status, 413);
+
+    const missing = await requestMultipart(`/api/documents/${original._id}/file`, {
+      method: 'PUT',
+      token: primaryToken
+    });
+    assert.equal(missing.status, 400);
+    const multiple = await requestMultipart(`/api/documents/${original._id}/file`, {
+      method: 'PUT',
+      token: primaryToken,
+      files: [
+        { name: 'one.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') },
+        { name: 'two.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') }
+      ]
+    });
+    assert.equal(multiple.status, 400);
+    const metadata = await requestMultipart(`/api/documents/${original._id}/file`, {
+      method: 'PUT',
+      token: primaryToken,
+      fields: { status: 'expired' },
+      files: [{ name: 'metadata.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') }]
+    });
+    assert.equal(metadata.status, 400);
+
+    const unchanged = await findStoredDocument(original._id);
+    assert.equal(unchanged.storageKey, original.storageKey);
+    assert.equal(unchanged.fileName, original.fileName);
+    assert.equal(fs.existsSync(originalPath), true);
+  });
+
+  await t.test('replacement requires authentication and document ownership', async () => {
+    const owner = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Replacement Owner', email: 'replacement-owner@example.com', password: 'replacement-owner-pass' }
+    });
+    const other = await request('/api/auth/register', {
+      method: 'POST',
+      body: { name: 'Replacement Other', email: 'replacement-other@example.com', password: 'replacement-other-pass' }
+    });
+    assert.equal(owner.status, 201);
+    assert.equal(other.status, 201);
+    const uploaded = await uploadPdf(owner.payload.token, 'Owned replacement target');
+    assert.equal(uploaded.status, 201);
+
+    const file = { name: 'unauthorized.pdf', type: 'application/pdf', buffer: Buffer.from('%PDF-1.7\n') };
+    const unauthenticated = await requestMultipart(`/api/documents/${uploaded.payload.document.id}/file`, {
+      method: 'PUT',
+      files: [file]
+    });
+    assert.equal(unauthenticated.status, 401);
+    const foreign = await requestMultipart(`/api/documents/${uploaded.payload.document.id}/file`, {
+      method: 'PUT',
+      token: other.payload.token,
+      files: [file]
+    });
+    assert.equal(foreign.status, 404);
+    assert.deepEqual(foreign.payload, { error: 'Document not found.' });
+  });
+
+  await t.test('database update failure retains the old file and cleans the staged replacement', async () => {
+    const uploaded = await uploadPdf(primaryToken, 'Database failure replacement');
+    assert.equal(uploaded.status, 201);
+    const original = await findStoredDocument(uploaded.payload.document.id);
+    const oldPath = path.join(uploadsDirectory, original.storageKey);
+    const originalUpdate = documentsDatabase.update;
+    const originalUnlink = fsPromises.unlink;
+    const originalConsoleError = console.error;
+    const attemptedUnlinks = [];
+    documentsDatabase.update = function update(query, changes, options, callback) {
+      if (query._id === original._id && changes.$set && changes.$set.storageKey) {
+        return callback(new Error('Injected replacement database failure.'), 0, null);
+      }
+      return originalUpdate.call(this, query, changes, options, callback);
+    };
+    fsPromises.unlink = async (filePath) => {
+      attemptedUnlinks.push(filePath);
+      return originalUnlink(filePath);
+    };
+    console.error = () => {};
+
+    try {
+      const failed = await requestMultipart(`/api/documents/${original._id}/file`, {
+        method: 'PUT',
+        token: primaryToken,
+        files: [{
+          name: 'staged replacement.pdf',
+          type: 'application/pdf',
+          buffer: Buffer.from('%PDF-1.7\nstaged')
+        }]
+      });
+      assert.equal(failed.status, 500);
+      assert.deepEqual(failed.payload, { error: 'An unexpected server error occurred.' });
+    } finally {
+      documentsDatabase.update = originalUpdate;
+      fsPromises.unlink = originalUnlink;
+      console.error = originalConsoleError;
+    }
+
+    const current = await findStoredDocument(original._id);
+    assert.equal(current.storageKey, original.storageKey);
+    assert.equal(fs.existsSync(oldPath), true);
+    assert.equal(attemptedUnlinks.length, 1);
+    assert.notEqual(attemptedUnlinks[0], oldPath);
+    assert.equal(fs.existsSync(attemptedUnlinks[0]), false);
+  });
+
+  await t.test('old-file deletion failure does not undo a successful replacement', async () => {
+    const uploaded = await uploadPdf(primaryToken, 'Old-file cleanup failure');
+    assert.equal(uploaded.status, 201);
+    const original = await findStoredDocument(uploaded.payload.document.id);
+    const oldPath = path.join(uploadsDirectory, original.storageKey);
+    const originalUnlink = fsPromises.unlink;
+    const originalConsoleError = console.error;
+    fsPromises.unlink = async (filePath) => {
+      if (filePath === oldPath) {
+        throw Object.assign(new Error('Injected old-file cleanup failure.'), { code: 'EACCES' });
+      }
+      return originalUnlink(filePath);
+    };
+    console.error = () => {};
+
+    let replaced;
+    try {
+      replaced = await requestMultipart(`/api/documents/${original._id}/file`, {
+        method: 'PUT',
+        token: primaryToken,
+        files: [{
+          name: 'new-authoritative-file.pdf',
+          type: 'application/pdf',
+          buffer: Buffer.from('%PDF-1.7\nnew authoritative bytes')
+        }]
+      });
+    } finally {
+      fsPromises.unlink = originalUnlink;
+      console.error = originalConsoleError;
+    }
+
+    assert.equal(replaced.status, 200);
+    const current = await findStoredDocument(original._id);
+    assert.notEqual(current.storageKey, original.storageKey);
+    assert.equal(fs.existsSync(oldPath), true);
+    assert.equal(fs.existsSync(path.join(uploadsDirectory, current.storageKey)), true);
+    assert.equal(replaced.payload.document.id, original._id);
+    assert.equal(replaced.payload.document.fileName, 'new-authoritative-file.pdf');
+    await originalUnlink(oldPath);
   });
 
   await t.test('deletes uploaded files with documents and preserves metadata-only deletion', async () => {

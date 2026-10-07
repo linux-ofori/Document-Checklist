@@ -5,6 +5,12 @@ const { uploadsDirectory } = require('./databasePaths');
 
 const extensions = new Set(['.pdf', '.jpg', '.jpeg', '.png']);
 const storageKeyPattern = /^[a-f0-9]{64}\.(?:pdf|jpg|jpeg|png)$/;
+const contentTypes = {
+  '.pdf': 'application/pdf',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png'
+};
 
 function sanitizeFileName(fileName) {
   if (typeof fileName !== 'string') {
@@ -143,6 +149,17 @@ function resolveStoragePath(storageKey) {
   return filePath;
 }
 
+async function readStoredFile(storageKey) {
+  const filePath = resolveStoragePath(storageKey);
+  const buffer = await fs.readFile(filePath);
+  const extension = path.extname(storageKey);
+
+  return {
+    buffer,
+    contentType: contentTypes[extension]
+  };
+}
+
 async function storeUploadedFile(buffer, extension) {
   await fs.mkdir(uploadsDirectory, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {
@@ -182,6 +199,7 @@ async function removeStoredFile(storageKey) {
 }
 
 module.exports = {
+  readStoredFile,
   removeStoredFile,
   sanitizeFileName,
   storeUploadedFile,

@@ -4,6 +4,7 @@ const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
 const { findUserById } = require('../models/userModel');
 const {
+  readStoredFile,
   removeStoredFile,
   storeUploadedFile,
   validateUploadedFile
@@ -19,12 +20,14 @@ const {
   findDocumentById,
   findDocumentsByOwnerId,
   toPublicDocument,
+  updateDocumentFileById,
   updateDocumentById
 } = require('../models/documentModel');
 
 const router = express.Router();
 const multipartParser = multer({
   storage: multer.memoryStorage(),
+  defParamCharset: 'utf8',
   limits: {
     fileSize: 5 * 1024 * 1024,
     files: 1,
@@ -175,6 +178,30 @@ function validateDocumentInput(body, isUpdate) {
 
 function hasValidDocumentId(id) {
   return documentIdPattern.test(id);
+}
+
+function contentDispositionForInlineFile(fileName) {
+  const fallbackName = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '\\$&');
+  const encodedName = encodeURIComponent(fileName).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `inline; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`;
+}
+
+async function requireOwnedDocument(request, response, next) {
+  if (!hasValidDocumentId(request.params.id)) {
+    return response.status(400).json({ error: 'Invalid document ID.' });
+  }
+
+  try {
+    const document = await findDocumentById(request.params.id, request.user.id);
+    if (!document) {
+      return response.status(404).json({ error: 'Document not found.' });
+    }
+
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 }
 
 function parseMultipartDocument(request, response, next) {
@@ -330,6 +357,36 @@ router.get('/:id', async (request, response, next) => {
   }
 });
 
+router.get('/:id/file', async (request, response, next) => {
+  try {
+    if (!hasValidDocumentId(request.params.id)) {
+      return response.status(400).json({ error: 'Invalid document ID.' });
+    }
+
+    const document = await findDocumentById(request.params.id, request.user.id);
+    if (!document || !document.storageKey) {
+      return response.status(404).json({ error: 'Document file not found.' });
+    }
+
+    let storedFile;
+    try {
+      storedFile = await readStoredFile(document.storageKey);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return response.status(404).json({ error: 'Document file not found.' });
+      }
+      throw error;
+    }
+
+    response.set('Content-Type', storedFile.contentType);
+    response.set('Content-Disposition', contentDispositionForInlineFile(document.fileName || 'document'));
+    response.set('Content-Length', String(storedFile.buffer.length));
+    return response.send(storedFile.buffer);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 router.put('/:id', async (request, response, next) => {
   try {
     if (!hasValidDocumentId(request.params.id)) {
@@ -392,6 +449,96 @@ router.put('/:id', async (request, response, next) => {
         error: 'Validation failed.',
         details: ['Document type and application cannot be changed while the document is linked to a requirement.']
       });
+    }
+    if (result.kind === 'missing-document') {
+      return response.status(404).json({ error: 'Document not found.' });
+    }
+
+    return response.json({ document: toPublicDocument(result.document) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.put('/:id/file', requireOwnedDocument, parseMultipartDocument, async (request, response, next) => {
+  try {
+    if (!request.is('multipart/form-data') || !request.file) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['Exactly one file is required for replacement.']
+      });
+    }
+    if (Object.keys(request.body || {}).length > 0) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['Replacement requests cannot include document metadata fields.']
+      });
+    }
+
+    const validatedFile = validateUploadedFile(request.file);
+    if (validatedFile.error) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: [validatedFile.error]
+      });
+    }
+
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return { kind: 'missing-owner' };
+      }
+
+      const document = await findDocumentById(request.params.id, request.user.id);
+      if (!document) {
+        return { kind: 'missing-document' };
+      }
+
+      const fileMetadata = {
+        fileName: validatedFile.fileName,
+        fileSizeKb: Math.ceil(request.file.size / 1024),
+        uploadedAt: new Date().toISOString()
+      };
+      const storageKey = await storeUploadedFile(request.file.buffer, validatedFile.extension);
+
+      let updatedDocument;
+      try {
+        updatedDocument = await updateDocumentFileById(
+          request.params.id,
+          request.user.id,
+          { ...fileMetadata, storageKey }
+        );
+      } catch (error) {
+        try {
+          await removeStoredFile(storageKey);
+        } catch (cleanupError) {
+          console.error('Unable to remove staged replacement file after document update failed.', cleanupError);
+        }
+        throw error;
+      }
+
+      if (!updatedDocument) {
+        try {
+          await removeStoredFile(storageKey);
+        } catch (cleanupError) {
+          console.error('Unable to remove staged replacement file after document disappeared.', cleanupError);
+        }
+        return { kind: 'missing-document' };
+      }
+
+      if (document.storageKey) {
+        try {
+          await removeStoredFile(document.storageKey);
+        } catch (cleanupError) {
+          console.error('Unable to remove previous document file after replacement.', cleanupError);
+        }
+      }
+
+      return { kind: 'updated', document: updatedDocument };
+    });
+
+    if (result.kind === 'missing-owner') {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
     }
     if (result.kind === 'missing-document') {
       return response.status(404).json({ error: 'Document not found.' });
