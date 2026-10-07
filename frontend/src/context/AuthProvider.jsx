@@ -59,8 +59,16 @@ export function AuthProvider({ children }) {
     setStatus('authenticated')
   }, [])
 
+  const signOut = useCallback(() => {
+    verificationId.current += 1
+    clearAuthToken()
+    setUser(null)
+    setError('')
+    setStatus('unauthenticated')
+  }, [])
+
   return (
-    <AuthContext.Provider value={{ user, status, error, authenticate }}>
+    <AuthContext.Provider value={{ user, status, error, authenticate, signOut }}>
       {children}
     </AuthContext.Provider>
   )

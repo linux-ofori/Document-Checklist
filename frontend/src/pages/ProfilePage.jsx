@@ -4,6 +4,7 @@ import { AppLayout } from '../layouts/AppLayout'
 import { Alert, Avatar, Button, Card, Input, LoadingState } from '../components/ui'
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
+import { useAuth } from '../context/AuthProvider'
 import { validateProfileForm } from '../utils/validation'
 import { formatDate, formatDateTime, pluralize } from '../utils/format'
 import { ROUTES } from '../utils/routes'
@@ -103,6 +104,7 @@ function ProfileDetailsForm({ profile }) {
 
 export function ProfilePage() {
   const { navigate } = useActiveRoute()
+  const { signOut } = useAuth()
   const { profile, stats, isLoading } = useAppData()
 
   if (isLoading && !profile) {
@@ -122,7 +124,10 @@ export function ProfilePage() {
           variant="ghost"
           size="md"
           leadingIcon={<LogOut size={16} aria-hidden="true" />}
-          onClick={() => navigate(ROUTES.login)}
+          onClick={() => {
+            signOut()
+            navigate(ROUTES.login)
+          }}
         >
           Log out
         </Button>
