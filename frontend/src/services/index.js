@@ -7,6 +7,7 @@ export {
   resolvePayload,
   storeAuthToken,
 } from './client'
+export { logout } from './authService'
 export {
   fetchProcesses,
   fetchProcess,

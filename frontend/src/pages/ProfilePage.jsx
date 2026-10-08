@@ -5,6 +5,7 @@ import { Alert, Avatar, Button, Card, Input, LoadingState } from '../components/
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAuth } from '../context/AuthProvider'
+import { logout } from '../services'
 import { validateProfileForm } from '../utils/validation'
 import { formatDate, formatDateTime, pluralize } from '../utils/format'
 import { ROUTES } from '../utils/routes'
@@ -105,6 +106,16 @@ export function ProfilePage() {
   const { navigate } = useActiveRoute()
   const { signOut } = useAuth()
   const { profile, stats, isLoading, retryHydration } = useAppData()
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } catch {
+      // Always clear the local session, even when the server cannot be reached.
+    }
+    signOut()
+    navigate(ROUTES.login)
+  }
+
   const documentCount = stats.completedDocuments + stats.inProgressDocuments + stats.missingDocuments
   const completionRate = documentCount
     ? Math.round((stats.completedDocuments / documentCount) * 100)
@@ -142,10 +153,7 @@ export function ProfilePage() {
           variant="ghost"
           size="md"
           leadingIcon={<LogOut size={16} aria-hidden="true" />}
-          onClick={() => {
-            signOut()
-            navigate(ROUTES.login)
-          }}
+          onClick={handleLogout}
         >
           Log out
         </Button>
