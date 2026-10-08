@@ -3,7 +3,11 @@ import { CalendarClock, Info, Link2, Sparkles } from 'lucide-react'
 import { Alert, Button, Dropzone, Input, Modal, Select } from '../ui'
 import { useAppData } from '../../hooks/useAppData'
 import { validateUploadForm } from '../../utils/validation'
-import { formatFileSize, toDateInputValue, addMonths } from '../../utils/format'
+import {
+  addMonths,
+  formatFileSize,
+  toLocalDateInputValue,
+} from '../../utils/format'
 import {
   DOCUMENT_TYPES,
   DOCUMENT_TYPE_OPTIONS,
@@ -12,7 +16,7 @@ import {
 import { findRequirementByType } from '../../utils/checklist'
 import { MAX_UPLOAD_SIZE_BYTES, validateUploadFile } from '../../utils/validation'
 
-const MIN_EXPIRY_DATE = toDateInputValue(new Date())
+const MIN_EXPIRY_DATE = toLocalDateInputValue(new Date())
 
 function getInitialValues(prefill) {
   return {
@@ -173,7 +177,7 @@ function UploadForm({ prefill }) {
     setValues((current) => ({
       ...current,
       documentType,
-      expiryDate: months ? toDateInputValue(addMonths(new Date(), months)) : '',
+      expiryDate: months ? toLocalDateInputValue(addMonths(new Date(), months)) : '',
     }))
 
     clearError('documentType')

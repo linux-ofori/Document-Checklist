@@ -26,7 +26,13 @@ import {
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { ROUTES } from '../utils/routes'
-import { formatCountdown, formatDate, formatRelativeTime, pluralize } from '../utils/format'
+import {
+  formatCalendarDate,
+  formatCountdown,
+  formatDate,
+  formatRelativeTime,
+  pluralize,
+} from '../utils/format'
 import { groupRequirementsByStatus } from '../utils/checklist'
 
 export function ApplicationDetailPage({ applicationId }) {
@@ -355,7 +361,9 @@ export function ApplicationDetailPage({ applicationId }) {
 
                       <span className="mini-list__aside">
                         <StatusBadge status={document.badgeStatus}>
-                          {document.expiresAt ? formatDate(document.expiresAt) : 'No expiry'}
+                          {document.expiresAt
+                            ? formatCalendarDate(document.expiresAt)
+                            : 'No expiry'}
                         </StatusBadge>
                       </span>
                     </li>

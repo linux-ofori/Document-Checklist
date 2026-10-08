@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CalendarDays, Download, FileText, Info, Link2, Paperclip, Upload } from 'lucide-react'
 import { Button, KeyValueList, Modal, StatusBadge } from '../ui'
 import { useAppData } from '../../hooks/useAppData'
-import { formatDate, formatDateTime, formatFileSize } from '../../utils/format'
+import { formatCalendarDate, formatDateTime, formatFileSize } from '../../utils/format'
 import { fetchDocumentFile } from '../../services'
 
 const MIME_TYPE_BY_EXTENSION = {
@@ -195,7 +195,9 @@ export function DocumentPreviewModal() {
                 {
                   id: 'expiry',
                   label: 'Expiry date',
-                  value: document.expiresAt ? formatDate(document.expiresAt) : 'Does not expire',
+                  value: document.expiresAt
+                    ? formatCalendarDate(document.expiresAt)
+                    : 'Does not expire',
                 },
               ]}
             />
@@ -231,7 +233,7 @@ export function DocumentMetaLine({ document }) {
       <Link2 size={13} aria-hidden="true" />
       {document.applicationName}
       <CalendarDays size={13} aria-hidden="true" />
-      {formatDate(document.expiresAt, 'No expiry')}
+      {formatCalendarDate(document.expiresAt, 'No expiry')}
     </span>
   )
 }

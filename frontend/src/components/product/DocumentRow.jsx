@@ -11,7 +11,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { Dropdown, IconButton, StatusBadge } from '../ui'
-import { formatDate, formatFileSize, formatRelativeTime } from '../../utils/format'
+import { formatCalendarDate, formatFileSize, formatRelativeTime } from '../../utils/format'
 import { cn } from '../../utils/cn'
 
 const TYPE_ICONS = {
@@ -71,7 +71,7 @@ export function DocumentRow({ document, onView, onRename, onRefreshExpiry, onRem
 
       <td className="document-row__expiry">
         <span className={cn('ui-caption', document.isExpiring && 'document-row__expiry--soon')}>
-          {formatDate(document.expiresAt, 'No expiry')}
+          {formatCalendarDate(document.expiresAt, 'No expiry')}
         </span>
       </td>
 

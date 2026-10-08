@@ -4,6 +4,13 @@ const DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   year: 'numeric',
 })
 
+const CALENDAR_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+})
+
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   day: 'numeric',
   month: 'short',
@@ -40,6 +47,11 @@ function toDate(value) {
 export function formatDate(value, fallback = 'Not set') {
   const date = toDate(value)
   return date ? DATE_FORMATTER.format(date) : fallback
+}
+
+export function formatCalendarDate(value, fallback = 'Not set') {
+  const date = toDate(value)
+  return date ? CALENDAR_DATE_FORMATTER.format(date) : fallback
 }
 
 export function formatDateTime(value, fallback = 'Not set') {
@@ -119,4 +131,14 @@ export function addMonths(date, months) {
 export function toDateInputValue(value) {
   const date = toDate(value)
   return date ? date.toISOString().slice(0, 10) : ''
+}
+
+export function toLocalDateInputValue(value) {
+  const date = toDate(value)
+  if (!date) return ''
+
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
