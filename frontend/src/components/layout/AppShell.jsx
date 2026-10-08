@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { cn } from '../../utils/cn'
 import { useActiveRoute } from '../../hooks/useActiveRoute'
 import { useAppData } from '../../hooks/useAppData'
-import { demoUser, primaryCta, primaryNavigation, secondaryNavigation } from '../../data/navigation'
+import { useAuth } from '../../context/AuthProvider'
+import { primaryCta, primaryNavigation, secondaryNavigation } from '../../data/navigation'
 import { ROUTES, matchRoute } from '../../utils/routes'
 import { Sidebar, TopHeader, MobileNavigation } from '../navigation'
 
@@ -22,6 +23,8 @@ export function AppShell({ children, className, headerActions }) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)
   const { path, navigate } = useActiveRoute()
   const { stats } = useAppData()
+  const { user } = useAuth()
+  const authenticatedUser = { ...user, role: user.role ?? 'Personal account' }
 
   const route = matchRoute(path)
   const title = SECTION_TITLES[route.name] ?? 'Overview'
@@ -34,7 +37,7 @@ export function AppShell({ children, className, headerActions }) {
         primaryItems={primaryNavigation}
         secondaryItems={secondaryNavigation}
         primaryCta={primaryCta}
-        user={demoUser}
+        user={authenticatedUser}
         path={path}
         onNavigate={navigate}
       />
@@ -43,7 +46,7 @@ export function AppShell({ children, className, headerActions }) {
         primaryItems={primaryNavigation}
         secondaryItems={secondaryNavigation}
         primaryCta={primaryCta}
-        user={demoUser}
+        user={authenticatedUser}
         path={path}
         onNavigate={navigate}
       />
@@ -51,7 +54,7 @@ export function AppShell({ children, className, headerActions }) {
       <div className="app-main">
         <TopHeader
           title={title}
-          user={demoUser}
+          user={authenticatedUser}
           actions={headerActions}
           unreadCount={stats?.unreadNotifications ?? 0}
           onOpenReminders={() => navigate(ROUTES.reminders)}
