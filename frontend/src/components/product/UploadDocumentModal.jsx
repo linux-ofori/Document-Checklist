@@ -23,6 +23,7 @@ function getInitialValues(prefill) {
     name: prefill?.name ?? '',
     documentType: prefill?.documentType ?? '',
     applicationId: prefill?.applicationId ?? '',
+    requirementKey: prefill?.requirementKey ?? '',
     file: null,
     fileName: '',
     fileSizeKb: 0,
@@ -113,8 +114,16 @@ function UploadForm({ prefill }) {
     const application = applicationViews.find((entry) => entry.id === values.applicationId)
     if (!application) return null
 
+    if (values.requirementKey) {
+      return application.requirements.find(
+        (requirement) =>
+          requirement.key === values.requirementKey
+          && requirement.type === values.documentType,
+      ) ?? null
+    }
+
     return findRequirementByType(application.requirements, values.documentType)
-  }, [applicationViews, values.applicationId, values.documentType])
+  }, [applicationViews, values.applicationId, values.documentType, values.requirementKey])
 
   const clearError = (key) => {
     setErrors((current) => {
@@ -177,10 +186,17 @@ function UploadForm({ prefill }) {
     setValues((current) => ({
       ...current,
       documentType,
+      requirementKey: '',
       expiryDate: months ? toLocalDateInputValue(addMonths(new Date(), months)) : '',
     }))
 
     clearError('documentType')
+  }
+
+  const handleApplicationChange = (applicationId) => {
+    setValues((current) => ({ ...current, applicationId, requirementKey: '' }))
+    clearError('applicationId')
+    setSubmissionError('')
   }
 
   const handleSubmit = async (event) => {
@@ -325,7 +341,7 @@ function UploadForm({ prefill }) {
           required
           value={values.applicationId}
           placeholder="Select an application"
-          onChange={(event) => setValue('applicationId', event.target.value)}
+          onChange={(event) => handleApplicationChange(event.target.value)}
           error={errors.applicationId}
           disabled={isSubmitting}
           options={applicationOptions}

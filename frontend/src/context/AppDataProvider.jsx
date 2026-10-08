@@ -301,10 +301,14 @@ export function AppDataProvider({ children }) {
 
         const application = state.applications.find((entry) => entry.id === document.applicationId)
         if (application) {
-          const requirement = findRequirementByType(
-            buildRequirements(application),
-            document.documentType,
-          )
+          const requirements = buildRequirements(application)
+          const requirement = values.requirementKey
+            ? requirements.find(
+                (entry) =>
+                  entry.key === values.requirementKey
+                  && entry.type === document.documentType,
+              ) ?? null
+            : findRequirementByType(requirements, document.documentType)
 
           if (requirement) {
             const result = await saveRequirementStatus({

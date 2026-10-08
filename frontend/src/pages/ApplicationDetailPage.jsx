@@ -105,6 +105,7 @@ export function ApplicationDetailPage({ applicationId }) {
       applicationId: application.id,
       documentType: requirement?.type ?? '',
       name: requirement?.name ?? '',
+      requirementKey: requirement?.key,
     })
   }
 
