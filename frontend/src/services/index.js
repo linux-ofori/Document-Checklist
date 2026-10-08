@@ -24,4 +24,4 @@ export {
   removeDocumentRecord,
 } from './documentService'
 export { fetchNotifications, readNotification, readAllNotifications } from './notificationService'
-export { fetchProfile, saveProfile, savePassword, savePreferences } from './profileService'
+export { saveProfile, savePassword, savePreferences } from './profileService'

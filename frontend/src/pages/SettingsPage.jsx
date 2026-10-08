@@ -13,16 +13,22 @@ function PreferencesForm({ profile }) {
 
   const [preferences, setPreferences] = useState(() => ({ ...profile.preferences }))
   const [isSavingPreferences, setIsSavingPreferences] = useState(false)
+  const [preferenceError, setPreferenceError] = useState('')
 
   const togglePreference = (id, value) => {
     setPreferences((current) => ({ ...current, [id]: value }))
+    setPreferenceError('')
   }
 
   const handleSavePreferences = async () => {
     setIsSavingPreferences(true)
+    setPreferenceError('')
     try {
       await updatePreferences(preferences)
       showToast('Your notification preferences have been saved.')
+    } catch (error) {
+      setPreferences({ ...profile.preferences })
+      setPreferenceError(error instanceof Error ? error.message : 'We could not save your preferences. Please try again.')
     } finally {
       setIsSavingPreferences(false)
     }
@@ -31,7 +37,7 @@ function PreferencesForm({ profile }) {
   return (
     <Card
       title="Notifications"
-      description="Turn reminders on and off. We never send anything you have opted out of."
+      description="Choose which document expiry and application update notifications you receive."
       padding="comfortable"
       footer={
         <Button
@@ -46,13 +52,16 @@ function PreferencesForm({ profile }) {
       }
     >
       <div className="muted-panel">
+        {preferenceError ? (
+          <Alert tone="danger" title="Preferences not saved" description={preferenceError} />
+        ) : null}
         {PREFERENCE_OPTIONS.map((option) => (
           <Switch
             key={option.id}
             label={option.label}
             description={option.description}
-            checked={Boolean(preferences[option.id])}
-            disabled={isSavingPreferences}
+            checked={option.alwaysOn || Boolean(preferences[option.id])}
+            disabled={isSavingPreferences || option.alwaysOn}
             onChange={(event) => togglePreference(option.id, event.target.checked)}
           />
         ))}
@@ -62,11 +71,12 @@ function PreferencesForm({ profile }) {
 }
 
 export function SettingsPage() {
-  const { profile, isLoading, changePassword, showToast } = useAppData()
+  const { profile, isLoading, retryHydration, changePassword, showToast } = useAppData()
 
   const [passwordValues, setPasswordValues] = useState(EMPTY_PASSWORD_VALUES)
   const [passwordErrors, setPasswordErrors] = useState({})
   const [isChangingPassword, setIsChangingPassword] = useState(false)
+  const [passwordFormError, setPasswordFormError] = useState('')
 
   if (isLoading && !profile) {
     return (
@@ -78,8 +88,24 @@ export function SettingsPage() {
     )
   }
 
+  if (!profile) {
+    return (
+      <AppLayout>
+        <div className="app-page">
+          <Alert
+            tone="danger"
+            title="We could not load your settings"
+            description="Check your connection and try again."
+            action={<Button variant="outline" size="sm" onClick={retryHydration}>Retry</Button>}
+          />
+        </div>
+      </AppLayout>
+    )
+  }
+
   const setPasswordValue = (key, value) => {
     setPasswordValues((current) => ({ ...current, [key]: value }))
+    setPasswordFormError('')
     setPasswordErrors((current) => {
       const shouldClear =
         Boolean(current[key]) || (key === 'newPassword' && current.confirmPassword)
@@ -94,6 +120,7 @@ export function SettingsPage() {
 
   const handleChangePassword = async (event) => {
     event.preventDefault()
+    setPasswordFormError('')
 
     const validationErrors = validateChangePasswordForm(passwordValues)
     if (Object.keys(validationErrors).length > 0) {
@@ -103,8 +130,14 @@ export function SettingsPage() {
 
     setIsChangingPassword(true)
     try {
-      await changePassword()
+      await changePassword({
+        currentPassword: passwordValues.currentPassword,
+        newPassword: passwordValues.newPassword,
+      })
       setPasswordValues(EMPTY_PASSWORD_VALUES)
+      setPasswordErrors({})
+    } catch (error) {
+      setPasswordFormError(error instanceof Error ? error.message : 'We could not change your password. Please try again.')
     } finally {
       setIsChangingPassword(false)
     }
@@ -128,6 +161,9 @@ export function SettingsPage() {
           padding="comfortable"
         >
           <form className="form-stack" onSubmit={handleChangePassword} noValidate>
+            {passwordFormError ? (
+              <Alert tone="danger" title="Password not changed" description={passwordFormError} />
+            ) : null}
             <Input
               label="Current password"
               type="password"
@@ -201,8 +237,8 @@ export function SettingsPage() {
             <Alert
               tone="info"
               icon={<Bell size={18} aria-hidden="true" />}
-              title="Reminders are sent from your own settings"
-              description="If you turn off every alert below, nothing will be emailed to you. Documents still appear as expiring inside the app."
+              title="Security and account notifications stay enabled"
+              description="This setting is always on to help protect your account."
             />
           </Card>
         </div>

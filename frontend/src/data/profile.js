@@ -19,24 +19,17 @@ export const PROFILE = {
     lastSignIn: '2026-09-30T06:42:00.000Z',
   },
   preferences: {
-    expiryAlerts: true,
-    missingDocumentAlerts: true,
+    documentExpiry: true,
     applicationUpdates: true,
-    emailDigest: true,
-    weeklySummary: false,
+    securityAccount: true,
   },
 }
 
 export const PREFERENCE_OPTIONS = [
   {
-    id: 'expiryAlerts',
-    label: 'Document expiry alerts',
+    id: 'documentExpiry',
+    label: 'Document expiry reminders',
     description: 'Warn me 60, 30 and 7 days before a document expires.',
-  },
-  {
-    id: 'missingDocumentAlerts',
-    label: 'Missing document alerts',
-    description: 'Tell me when a checklist still has items marked as missing.',
   },
   {
     id: 'applicationUpdates',
@@ -44,13 +37,9 @@ export const PREFERENCE_OPTIONS = [
     description: 'Notify me when a checklist is submitted or a new step is unlocked.',
   },
   {
-    id: 'emailDigest',
-    label: 'Daily email digest',
-    description: 'One summary email each morning with everything that needs attention.',
-  },
-  {
-    id: 'weeklySummary',
-    label: 'Weekly progress summary',
-    description: 'A Monday recap of progress across all applications.',
+    id: 'securityAccount',
+    label: 'Security and account notifications',
+    description: 'Always enabled for important account and security updates.',
+    alwaysOn: true,
   },
 ]

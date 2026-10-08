@@ -5,7 +5,6 @@ import {
   fetchDocuments,
   fetchNotifications,
   fetchProcesses,
-  fetchProfile,
   readAllNotifications,
   readNotification,
   removeDocumentRecord,
@@ -17,6 +16,7 @@ import {
   replaceDocumentFile,
   createApplicationRecord,
   saveRequirementStatus,
+  storeAuthToken,
 } from '../services'
 import { findAssistantAnswer } from '../data'
 import {
@@ -33,10 +33,59 @@ import { AppDataContext } from './AppDataContext'
 import { ACTIONS, INITIAL_STATE, appDataReducer } from './appDataReducer'
 import { GlobalOverlays } from '../components/product/GlobalOverlays'
 
+function normalizeProfile(user, existingProfile = {}) {
+  const preferences = {
+    ...existingProfile.preferences,
+    ...user?.preferences?.notifications,
+  }
+
+  return {
+    ...existingProfile,
+    ...user,
+    preferences: {
+      documentExpiry: typeof preferences.documentExpiry === 'boolean'
+        ? preferences.documentExpiry
+        : true,
+      applicationUpdates: typeof preferences.applicationUpdates === 'boolean'
+        ? preferences.applicationUpdates
+        : true,
+      securityAccount: true,
+    },
+  }
+}
+
+function safeAccountError(error, operation) {
+  if (error?.code === 'TOKEN_STORAGE_FAILED') {
+    return error.message
+  }
+
+  if (error?.status === 400) {
+    return operation === 'password'
+      ? 'The new password does not meet the requirements.'
+      : 'Please check the information and try again.'
+  }
+  if (error?.status === 401) {
+    return operation === 'password'
+      ? 'The current password is incorrect or your session has expired.'
+      : 'Your session has expired. Please sign in again.'
+  }
+  if (error?.status === 409) {
+    if (operation === 'profile') return 'That email address is already in use.'
+    return operation === 'password'
+      ? 'We could not change your password. Please try again.'
+      : 'We could not save your notification preferences. Please try again.'
+  }
+  if (error?.status === 429) return 'Too many attempts. Please wait and try again later.'
+  if (error instanceof TypeError) return 'Could not reach the server. Check your connection and try again.'
+  return operation === 'password'
+    ? 'We could not change your password. Please try again.'
+    : 'We could not save your account changes. Please try again.'
+}
+
 export function AppDataProvider({ children }) {
   const [state, dispatch] = useReducer(appDataReducer, INITIAL_STATE)
   const [hydrationRetry, setHydrationRetry] = useState(0)
-  const { status: authStatus, user } = useAuth()
+  const { status: authStatus, user, updateUser, signOut } = useAuth()
   const hydrationRef = useRef({ sessionId: null, promise: null })
   const sessionId = user?.id ?? user?.email ?? null
   const authSessionRef = useRef({ authStatus, sessionId })
@@ -55,6 +104,8 @@ export function AppDataProvider({ children }) {
     if (hydrationRef.current.sessionId !== sessionId) {
       hydrationRef.current = { sessionId, promise: null }
       dispatch({ type: ACTIONS.AUTH_RESET })
+    } else if (hydrationRef.current.promise) {
+      return undefined
     }
 
     if (!hydrationRef.current.promise) {
@@ -63,14 +114,13 @@ export function AppDataProvider({ children }) {
         fetchApplications(),
         fetchDocuments(),
         fetchNotifications(),
-        fetchProfile(),
       ])
-        .then(([processes, applications, documents, notifications, profile]) => ({
+        .then(([processes, applications, documents, notifications]) => ({
           processes,
           applications,
           documents,
           notifications,
-          profile,
+          profile: normalizeProfile(user),
         }))
         .catch((error) => {
           if (hydrationRef.current.promise === hydrationPromise) {
@@ -97,7 +147,7 @@ export function AppDataProvider({ children }) {
     return () => {
       isActive = false
     }
-  }, [authStatus, hydrationRetry, sessionId])
+  }, [authStatus, hydrationRetry, sessionId, user])
 
   const retryHydration = useCallback(() => {
     if (
@@ -412,29 +462,57 @@ export function AppDataProvider({ children }) {
 
   const updateProfile = useCallback(
     async (values) => {
-      await saveProfile(values)
-      dispatch({ type: ACTIONS.PROFILE_PATCHED, payload: values })
-      showToast('Your profile has been updated.')
-      return true
+      try {
+        const updatedUser = await saveProfile(values)
+        const profile = normalizeProfile(updatedUser, state.profile)
+        updateUser(updatedUser)
+        dispatch({ type: ACTIONS.PROFILE_PATCHED, payload: profile })
+        showToast('Your profile has been updated.')
+        return profile
+      } catch (error) {
+        throw new Error(safeAccountError(error, 'profile'))
+      }
     },
-    [showToast],
+    [showToast, state.profile, updateUser],
   )
 
   const changePassword = useCallback(
-    async () => {
-      await savePassword()
-      showToast('Your password has been changed.')
-      return true
+    async ({ currentPassword, newPassword }) => {
+      try {
+        const result = await savePassword({ currentPassword, newPassword })
+        if (!storeAuthToken(result?.token)) {
+          signOut()
+          const error = new Error('Your password changed, but the new session could not be saved. Please sign in again.')
+          error.code = 'TOKEN_STORAGE_FAILED'
+          throw error
+        }
+
+        if (result?.user) updateUser(result.user)
+        showToast('Your password has been changed.')
+        return true
+      } catch (error) {
+        throw new Error(safeAccountError(error, 'password'))
+      }
     },
-    [showToast],
+    [showToast, signOut, updateUser],
   )
 
   const updatePreferences = useCallback(
     async (preferences) => {
-      dispatch({ type: ACTIONS.PROFILE_PATCHED, payload: { preferences } })
-      await savePreferences(preferences)
+      try {
+        const updatedUser = await savePreferences(preferences)
+        const profile = normalizeProfile(updatedUser, state.profile)
+        updateUser(updatedUser)
+        dispatch({
+          type: ACTIONS.PROFILE_PATCHED,
+          payload: { preferences: profile.preferences },
+        })
+        return profile.preferences
+      } catch (error) {
+        throw new Error(safeAccountError(error, 'preferences'))
+      }
     },
-    [],
+    [state.profile, updateUser],
   )
 
   const openAssistant = useCallback(() => {

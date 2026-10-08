@@ -59,6 +59,19 @@ export function AuthProvider({ children }) {
     setStatus('authenticated')
   }, [])
 
+  const updateUser = useCallback((updatedUser) => {
+    if (!updatedUser) return
+
+    verificationId.current += 1
+    setUser((currentUser) => ({
+      ...currentUser,
+      ...updatedUser,
+      preferences: updatedUser.preferences
+        ? { ...currentUser?.preferences, ...updatedUser.preferences }
+        : currentUser?.preferences,
+    }))
+  }, [])
+
   const signOut = useCallback(() => {
     verificationId.current += 1
     clearAuthToken()
@@ -68,7 +81,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, status, error, authenticate, signOut }}>
+    <AuthContext.Provider value={{ user, status, error, authenticate, updateUser, signOut }}>
       {children}
     </AuthContext.Provider>
   )

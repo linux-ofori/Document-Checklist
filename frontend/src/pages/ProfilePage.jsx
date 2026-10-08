@@ -16,13 +16,14 @@ function ProfileDetailsForm({ profile }) {
     name: profile.name,
     email: profile.email,
     phone: profile.phone,
-    location: profile.location,
   })
   const [errors, setErrors] = useState({})
   const [isSaving, setIsSaving] = useState(false)
+  const [formError, setFormError] = useState('')
 
   const setValue = (key, value) => {
     setValues((current) => ({ ...current, [key]: value }))
+    setFormError('')
     setErrors((current) => {
       if (!current[key]) return current
       const next = { ...current }
@@ -33,6 +34,7 @@ function ProfileDetailsForm({ profile }) {
 
   const handleSubmit = async (event) => {
     event.preventDefault()
+    setFormError('')
 
     const validationErrors = validateProfileForm(values)
     if (Object.keys(validationErrors).length > 0) {
@@ -42,7 +44,9 @@ function ProfileDetailsForm({ profile }) {
 
     setIsSaving(true)
     try {
-      await updateProfile(values)
+      await updateProfile({ name: values.name, email: values.email, phone: values.phone })
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'We could not save your profile. Please try again.')
     } finally {
       setIsSaving(false)
     }
@@ -50,6 +54,10 @@ function ProfileDetailsForm({ profile }) {
 
   return (
     <form className="form-stack" onSubmit={handleSubmit} noValidate>
+      {formError ? (
+        <Alert tone="danger" title="Profile not saved" description={formError} />
+      ) : null}
+
       <Input
         label="Full name"
         required
@@ -69,23 +77,14 @@ function ProfileDetailsForm({ profile }) {
         disabled={isSaving}
       />
 
-      <div className="form-row">
-        <Input
-          label="Phone number"
-          type="tel"
-          value={values.phone}
-          onChange={(event) => setValue('phone', event.target.value)}
-          error={errors.phone}
-          disabled={isSaving}
-        />
-
-        <Input
-          label="Location"
-          value={values.location}
-          onChange={(event) => setValue('location', event.target.value)}
-          disabled={isSaving}
-        />
-      </div>
+      <Input
+        label="Phone number"
+        type="tel"
+        value={values.phone}
+        onChange={(event) => setValue('phone', event.target.value)}
+        error={errors.phone}
+        disabled={isSaving}
+      />
 
       <div className="form-actions">
         <Button
@@ -105,13 +104,32 @@ function ProfileDetailsForm({ profile }) {
 export function ProfilePage() {
   const { navigate } = useActiveRoute()
   const { signOut } = useAuth()
-  const { profile, stats, isLoading } = useAppData()
+  const { profile, stats, isLoading, retryHydration } = useAppData()
+  const documentCount = stats.completedDocuments + stats.inProgressDocuments + stats.missingDocuments
+  const completionRate = documentCount
+    ? Math.round((stats.completedDocuments / documentCount) * 100)
+    : 0
 
   if (isLoading && !profile) {
     return (
       <AppLayout>
         <div className="app-page">
           <LoadingState variant="skeleton" lines={4} label="Loading your profile" />
+        </div>
+      </AppLayout>
+    )
+  }
+
+  if (!profile) {
+    return (
+      <AppLayout>
+        <div className="app-page">
+          <Alert
+            tone="danger"
+            title="We could not load your profile"
+            description="Check your connection and try again."
+            action={<Button variant="outline" size="sm" onClick={retryHydration}>Retry</Button>}
+          />
         </div>
       </AppLayout>
     )
@@ -148,10 +166,9 @@ export function ProfilePage() {
             <div className="profile-header__meta">
               <h2 className="ui-card-title">{profile.name}</h2>
               <p className="ui-body">{profile.email}</p>
-              <p className="ui-caption">
-                {profile.role} · {profile.location} · Member since{' '}
-                {formatDate(profile.memberSince)}
-              </p>
+              {profile.createdAt ? (
+                <p className="ui-caption">Member since {formatDate(profile.createdAt)}</p>
+              ) : null}
             </div>
 
             <div className="profile-header__stats">
@@ -164,20 +181,16 @@ export function ProfilePage() {
                 <span className="ui-caption">Documents collected</span>
               </div>
               <div className="profile-stat">
-                <span className="profile-stat__value">{profile.completionRate}%</span>
-                <span className="ui-caption">Average completion</span>
+                <span className="profile-stat__value">{completionRate}%</span>
+                <span className="ui-caption">Checklist completion</span>
               </div>
             </div>
           </div>
-
-          {profile.bio ? (
-            <p className="ui-body profile-header__bio">{profile.bio}</p>
-          ) : null}
         </Card>
 
         <Card
           title="Personal details"
-          description="We only use your phone number for expiry reminders."
+          description="Update the contact details associated with your account."
           padding="comfortable"
         >
           <ProfileDetailsForm key={profile.email} profile={profile} />
@@ -199,26 +212,36 @@ export function ProfilePage() {
               </Button>
             }
           >
-            <div className="definition-grid">
-              <div className="definition-grid__item">
-                <span className="ui-caption">Two-factor authentication</span>
-                <span className="definition-grid__value">
-                  {profile.security.twoFactorEnabled ? 'Enabled' : 'Not enabled'}
-                </span>
+            {profile.security ? (
+              <div className="definition-grid">
+                {profile.security.twoFactorEnabled !== undefined ? (
+                  <div className="definition-grid__item">
+                    <span className="ui-caption">Two-factor authentication</span>
+                    <span className="definition-grid__value">
+                      {profile.security.twoFactorEnabled ? 'Enabled' : 'Not enabled'}
+                    </span>
+                  </div>
+                ) : null}
+                {profile.security.lastPasswordChange ? (
+                  <div className="definition-grid__item">
+                    <span className="ui-caption">Last password change</span>
+                    <span className="definition-grid__value">
+                      {formatDate(profile.security.lastPasswordChange)}
+                    </span>
+                  </div>
+                ) : null}
+                {profile.security.lastSignIn ? (
+                  <div className="definition-grid__item">
+                    <span className="ui-caption">Last sign in</span>
+                    <span className="definition-grid__value">
+                      {formatDateTime(profile.security.lastSignIn)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
-              <div className="definition-grid__item">
-                <span className="ui-caption">Last password change</span>
-                <span className="definition-grid__value">
-                  {formatDate(profile.security.lastPasswordChange)}
-                </span>
-              </div>
-              <div className="definition-grid__item">
-                <span className="ui-caption">Last sign in</span>
-                <span className="definition-grid__value">
-                  {formatDateTime(profile.security.lastSignIn)}
-                </span>
-              </div>
-            </div>
+            ) : (
+              <p className="ui-body">Additional security details are not available from your account profile.</p>
+            )}
           </Card>
 
           <Card title="Your data" padding="comfortable">

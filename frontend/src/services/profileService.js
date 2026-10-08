@@ -1,18 +1,42 @@
-import { PROFILE } from '../data'
-import { resolveAfter, resolvePayload } from './client'
+import { request } from './client'
 
-export function fetchProfile() {
-  return resolvePayload(PROFILE, 300)
+function responseUser(response) {
+  return response?.user ?? response
 }
 
-export function saveProfile(patch) {
-  return resolveAfter(520).then(() => patch)
+export async function saveProfile({ name, email, phone }) {
+  const response = await request('auth/me', {
+    method: 'PUT',
+    body: {
+      name: String(name ?? '').trim(),
+      email: String(email ?? '').trim(),
+      phone: String(phone ?? '').trim(),
+    },
+  })
+
+  return responseUser(response)
 }
 
-export function savePassword() {
-  return resolveAfter(640).then(() => ({ updated: true, changedAt: new Date().toISOString() }))
+export async function savePassword({ currentPassword, newPassword }) {
+  return request('auth/change-password', {
+    method: 'POST',
+    body: { currentPassword, newPassword },
+  })
 }
 
-export function savePreferences(preferences) {
-  return resolveAfter(260).then(() => preferences)
+export async function savePreferences(preferences) {
+  const response = await request('auth/me', {
+    method: 'PUT',
+    body: {
+      preferences: {
+        notifications: {
+          documentExpiry: Boolean(preferences.documentExpiry),
+          applicationUpdates: Boolean(preferences.applicationUpdates),
+          securityAccount: true,
+        },
+      },
+    },
+  })
+
+  return responseUser(response)
 }

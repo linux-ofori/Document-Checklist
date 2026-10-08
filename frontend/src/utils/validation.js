@@ -95,11 +95,14 @@ export function validateProfileForm(values) {
   const name = String(values.name ?? '').trim()
   if (!name) errors.name = 'Enter your full name.'
   else if (name.length < 2) errors.name = 'Enter at least 2 characters.'
+  else if (name.length > 100) errors.name = 'Name must be 100 characters or fewer.'
 
   if (!String(values.email ?? '').trim()) {
     errors.email = 'Enter your email address.'
   } else if (!isValidEmail(values.email)) {
     errors.email = 'Enter a valid email address.'
+  } else if (String(values.email).trim().length > 254) {
+    errors.email = 'Email address must be 254 characters or fewer.'
   }
 
   const phone = String(values.phone ?? '').trim()
@@ -121,6 +124,10 @@ export function validateChangePasswordForm(values) {
     errors.newPassword = 'Choose a new password.'
   } else if (values.newPassword.length < PASSWORD_MIN_LENGTH) {
     errors.newPassword = `Use at least ${PASSWORD_MIN_LENGTH} characters.`
+  } else if (values.newPassword.length > 128) {
+    errors.newPassword = 'Use 128 characters or fewer.'
+  } else if (new TextEncoder().encode(values.newPassword).length > 72) {
+    errors.newPassword = 'Use a password no longer than 72 UTF-8 bytes.'
   }
 
   if (!values.confirmPassword) {

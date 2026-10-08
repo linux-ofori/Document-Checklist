@@ -142,7 +142,21 @@ export function appDataReducer(state, action) {
       }
 
     case ACTIONS.PROFILE_PATCHED:
-      return { ...state, profile: { ...state.profile, ...action.payload } }
+      return {
+        ...state,
+        profile: {
+          ...state.profile,
+          ...action.payload,
+          ...(action.payload.preferences
+            ? {
+                preferences: {
+                  ...state.profile?.preferences,
+                  ...action.payload.preferences,
+                },
+              }
+            : {}),
+        },
+      }
 
     case ACTIONS.UPLOAD_OPENED:
       return { ...state, upload: { isOpen: true, prefill: action.payload, isSubmitting: false } }
