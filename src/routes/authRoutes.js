@@ -14,6 +14,7 @@ const {
   findUserByEmail,
   findUserById,
   findUsersPendingDeletion,
+  incrementUserTokenVersionById,
   markUserDeletingById,
   updateUserById,
   toPublicUser
@@ -320,6 +321,19 @@ router.post('/login', loginRateLimit, async (request, response, next) => {
 
 router.get('/me', requireAuth, (request, response) => {
   return response.json({ user: request.user });
+});
+
+router.post('/logout', requireAuth, async (request, response, next) => {
+  try {
+    const user = await incrementUserTokenVersionById(request.user.id);
+    if (!user) {
+      return response.status(404).json({ error: 'The authenticated user no longer exists.' });
+    }
+
+    return response.json({ message: 'Logged out successfully.' });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 router.put('/me', requireAuth, async (request, response, next) => {

@@ -28,7 +28,13 @@ const documentsDatabase = require('../src/config/documentsDatabase');
 const { uploadsDirectory } = require('../src/config/databasePaths');
 const authRoutes = require('../src/routes/authRoutes');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
-const { findUserById, markUserDeletingById, toPublicUser } = require('../src/models/userModel');
+const {
+  deleteUserById,
+  findUserById,
+  incrementUserTokenVersionById,
+  markUserDeletingById,
+  toPublicUser
+} = require('../src/models/userModel');
 let server;
 let baseUrl;
 
@@ -304,6 +310,88 @@ test('legacy users and version-zero tokens receive defaults and remain authentic
     body: { email: 'legacy-account@example.com', password: 'legacy-account-password-updated' }
   });
   assert.equal(newPasswordLogin.status, 200);
+});
+
+test('logout invalidates all existing tokens and allows a new login', async () => {
+  const account = await request('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Logout User', email: 'logout@example.com', password: 'logout-test-password' }
+  });
+  assert.equal(account.status, 201);
+
+  const secondToken = await request('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'logout@example.com', password: 'logout-test-password' }
+  });
+  assert.equal(secondToken.status, 200);
+
+  const unauthenticated = await request('/api/auth/logout', { method: 'POST' });
+  assert.equal(unauthenticated.status, 401);
+
+  const loggedOut = await request('/api/auth/logout', {
+    method: 'POST',
+    token: account.payload.token
+  });
+  assert.equal(loggedOut.status, 200);
+  assert.deepEqual(loggedOut.payload, { message: 'Logged out successfully.' });
+  assert.equal(Object.hasOwn(loggedOut.payload, 'token'), false);
+  assert.equal((await request('/api/auth/me', { token: account.payload.token })).status, 401);
+  assert.equal((await request('/api/auth/me', { token: secondToken.payload.token })).status, 401);
+
+  const relogin = await request('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'logout@example.com', password: 'logout-test-password' }
+  });
+  assert.equal(relogin.status, 200);
+  assert.equal((await request('/api/auth/me', { token: relogin.payload.token })).status, 200);
+});
+
+test('legacy user without tokenVersion can log out and revoke its version-zero token', async () => {
+  const passwordHash = await bcrypt.hash('legacy-logout-password', 12);
+  const legacyUser = await insertLegacyUser({
+    name: 'Legacy Logout User',
+    email: 'legacy-logout@example.com',
+    password: passwordHash,
+    createdAt: '2025-01-01T00:00:00.000Z',
+    updatedAt: '2025-01-01T00:00:00.000Z'
+  });
+  const legacyToken = jwt.sign({}, testJwtSecret, {
+    subject: legacyUser._id,
+    expiresIn: '1d'
+  });
+
+  const loggedOut = await request('/api/auth/logout', { method: 'POST', token: legacyToken });
+  assert.equal(loggedOut.status, 200);
+  assert.equal((await request('/api/auth/me', { token: legacyToken })).status, 401);
+  assert.equal((await findUserById(legacyUser._id)).tokenVersion, 1);
+});
+
+test('logout does not succeed for missing or deleting users', async () => {
+  const deletingAccount = await request('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Deleting Logout User', email: 'deleting-logout@example.com', password: 'logout-test-password' }
+  });
+  assert.equal(deletingAccount.status, 201);
+  assert.ok(await markUserDeletingById(deletingAccount.payload.user.id));
+  assert.equal(await incrementUserTokenVersionById(deletingAccount.payload.user.id), null);
+  const deletingLogout = await request('/api/auth/logout', {
+    method: 'POST',
+    token: deletingAccount.payload.token
+  });
+  assert.equal(deletingLogout.status, 401);
+
+  const missingAccount = await request('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Missing Logout User', email: 'missing-logout@example.com', password: 'logout-test-password' }
+  });
+  assert.equal(missingAccount.status, 201);
+  assert.equal(await deleteUserById(missingAccount.payload.user.id), true);
+  assert.equal(await incrementUserTokenVersionById(missingAccount.payload.user.id), null);
+  const missingLogout = await request('/api/auth/logout', {
+    method: 'POST',
+    token: missingAccount.payload.token
+  });
+  assert.equal(missingLogout.status, 401);
 });
 
 test('authentication, account management, and document API', async (t) => {

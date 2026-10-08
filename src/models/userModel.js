@@ -144,6 +144,23 @@ function changeUserPasswordById(id, currentPasswordHash, newPasswordHash) {
   });
 }
 
+function incrementUserTokenVersionById(id) {
+  return new Promise((resolve, reject) => {
+    database.update(
+      { _id: id, deleting: { $ne: true } },
+      { $inc: { tokenVersion: 1 } },
+      { returnUpdatedDocs: true },
+      (error, count, user) => {
+        if (error) {
+          return reject(error);
+        }
+
+        return resolve(count > 0 ? user : null);
+      }
+    );
+  });
+}
+
 function deleteUserById(id) {
   return new Promise((resolve, reject) => {
     database.remove({ _id: id }, {}, (error, count) => error ? reject(error) : resolve(count > 0));
@@ -157,6 +174,7 @@ module.exports = {
   findUserByEmail,
   findUserById,
   findUsersPendingDeletion,
+  incrementUserTokenVersionById,
   markUserDeletingById,
   updateUserById,
   toPublicUser

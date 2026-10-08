@@ -61,7 +61,7 @@ Registration and login return a JWT in the `token` response field. Include it on
 Authorization: Bearer <token>
 ```
 
-The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There is currently no refresh-token endpoint or logout endpoint. Deleting an account also makes its token unusable.
+The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There is currently no refresh-token endpoint. Logging out invalidates all currently issued access tokens for the account; deleting an account also makes its tokens unusable.
 
 ### Validation summary
 
@@ -155,6 +155,18 @@ Required JSON fields: `email`, `password`.
 ```
 
 Possible errors: `401` authentication error or a shared server error below.
+
+#### `POST /api/auth/logout`
+
+**Authentication:** Required. Invalidates all currently issued access tokens for the authenticated account. This is effectively “sign out everywhere” for the account. A subsequent login issues a new valid token. No request body.
+
+**Success:** `200 OK`
+
+```json
+{ "message": "Logged out successfully." }
+```
+
+Possible errors: `401` authentication error, `404` authenticated user no longer exists, or a shared server error below.
 
 #### `PUT /api/auth/me`
 
@@ -413,4 +425,3 @@ Express `trust proxy` is not enabled by default. Behind a reverse proxy or load 
 - There is no health-check endpoint.
 - Document listing has no pagination.
 - There is no refresh-token endpoint.
-- There is no logout endpoint.
