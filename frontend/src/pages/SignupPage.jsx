@@ -239,7 +239,6 @@ export function SignupPage() {
                 variant="primary"
                 size="lg"
                 isLoading={isSubmitting}
-                disabled={isLoading}
                 leadingIcon={isSubmitting ? null : <UserPlus size={16} aria-hidden="true" />}
               >
                 {isSubmitting ? 'Creating your account' : 'Create account'}
