@@ -220,6 +220,7 @@ test('public user serialization allows only intended user fields', () => {
       notifications: {
         documentExpiry: true,
         applicationUpdates: true,
+        emailChecklistCompletion: false,
         securityAccount: true
       }
     },
@@ -260,6 +261,7 @@ test('legacy users and version-zero tokens receive defaults and remain authentic
     notifications: {
       documentExpiry: true,
       applicationUpdates: true,
+      emailChecklistCompletion: false,
       securityAccount: true
     }
   });
@@ -279,6 +281,7 @@ test('legacy users and version-zero tokens receive defaults and remain authentic
     notifications: {
       documentExpiry: false,
       applicationUpdates: true,
+      emailChecklistCompletion: false,
       securityAccount: true
     }
   });
@@ -413,6 +416,7 @@ test('authentication, account management, and document API', async (t) => {
       notifications: {
         documentExpiry: true,
         applicationUpdates: true,
+        emailChecklistCompletion: false,
         securityAccount: true
       }
     });
@@ -1050,6 +1054,7 @@ test('authentication, account management, and document API', async (t) => {
     const profile = await request('/api/auth/me', { token: primaryToken });
     assert.equal(profile.status, 200);
     assertSanitizedUser(profile.payload.user);
+    assert.equal(profile.payload.user.preferences.notifications.emailChecklistCompletion, false);
 
     const updatedProfile = await request('/api/auth/me', {
       method: 'PUT', token: primaryToken, body: { name: 'Renamed User' }
@@ -1074,6 +1079,7 @@ test('authentication, account management, and document API', async (t) => {
       notifications: {
         documentExpiry: false,
         applicationUpdates: true,
+        emailChecklistCompletion: false,
         securityAccount: true
       }
     });
@@ -1124,9 +1130,48 @@ test('authentication, account management, and document API', async (t) => {
       notifications: {
         documentExpiry: false,
         applicationUpdates: false,
+        emailChecklistCompletion: false,
         securityAccount: true
       }
     });
+
+    const enabledEmailPreference = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { preferences: { notifications: { emailChecklistCompletion: true } } }
+    });
+    assert.equal(enabledEmailPreference.status, 200);
+    assert.deepEqual(enabledEmailPreference.payload.user.preferences.notifications, {
+      documentExpiry: false,
+      applicationUpdates: false,
+      emailChecklistCompletion: true,
+      securityAccount: true
+    });
+
+    const disabledEmailPreference = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { preferences: { notifications: { emailChecklistCompletion: false } } }
+    });
+    assert.equal(disabledEmailPreference.status, 200);
+    assert.equal(
+      disabledEmailPreference.payload.user.preferences.notifications.emailChecklistCompletion,
+      false
+    );
+    const profileAfterEmailPreferenceUpdate = await request('/api/auth/me', { token: primaryToken });
+    assert.equal(profileAfterEmailPreferenceUpdate.status, 200);
+    assert.equal(
+      profileAfterEmailPreferenceUpdate.payload.user.preferences.notifications.emailChecklistCompletion,
+      false
+    );
+    assert.equal(
+      profileAfterEmailPreferenceUpdate.payload.user.preferences.notifications.documentExpiry,
+      false
+    );
+    assert.equal(
+      profileAfterEmailPreferenceUpdate.payload.user.preferences.notifications.applicationUpdates,
+      false
+    );
 
     const phoneBeforeInvalidUpdates = await request('/api/auth/me', {
       method: 'PUT',
@@ -1144,6 +1189,7 @@ test('authentication, account management, and document API', async (t) => {
       { preferences: { unknown: true } },
       { preferences: { notifications: { unknown: true } } },
       { preferences: { notifications: { documentExpiry: 'false' } } },
+      { preferences: { notifications: { emailChecklistCompletion: 'true' } } },
       { preferences: { notifications: { securityAccount: false } } }
     ]) {
       const invalid = await request('/api/auth/me', { method: 'PUT', token: primaryToken, body });
@@ -1161,6 +1207,7 @@ test('authentication, account management, and document API', async (t) => {
       notifications: {
         documentExpiry: false,
         applicationUpdates: false,
+        emailChecklistCompletion: false,
         securityAccount: true
       }
     });
@@ -1179,6 +1226,7 @@ test('authentication, account management, and document API', async (t) => {
     assert.deepEqual(otherUserProfile.payload.user.preferences.notifications, {
       documentExpiry: true,
       applicationUpdates: true,
+      emailChecklistCompletion: false,
       securityAccount: true
     });
 

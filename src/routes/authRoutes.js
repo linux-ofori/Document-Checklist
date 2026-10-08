@@ -179,7 +179,12 @@ function validateProfileUpdates(body, currentPreferences) {
       } else {
         const notificationUpdates = {};
         for (const [field, value] of Object.entries(preferences.notifications)) {
-          if (!['documentExpiry', 'applicationUpdates', 'securityAccount'].includes(field)) {
+          if (![
+            'documentExpiry',
+            'applicationUpdates',
+            'emailChecklistCompletion',
+            'securityAccount'
+          ].includes(field)) {
             errors.push(`The notifications.${field} preference is not supported.`);
           } else if (typeof value !== 'boolean') {
             errors.push(`The notifications.${field} preference must be a boolean.`);

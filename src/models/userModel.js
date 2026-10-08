@@ -3,6 +3,7 @@ const database = require('../config/database');
 const DEFAULT_NOTIFICATION_PREFERENCES = {
   documentExpiry: true,
   applicationUpdates: true,
+  emailChecklistCompletion: false,
   securityAccount: true
 };
 
@@ -17,6 +18,9 @@ function normalizePreferences(preferences) {
       applicationUpdates: typeof notifications.applicationUpdates === 'boolean'
         ? notifications.applicationUpdates
         : DEFAULT_NOTIFICATION_PREFERENCES.applicationUpdates,
+      emailChecklistCompletion: typeof notifications.emailChecklistCompletion === 'boolean'
+        ? notifications.emailChecklistCompletion
+        : DEFAULT_NOTIFICATION_PREFERENCES.emailChecklistCompletion,
       securityAccount: true
     }
   };

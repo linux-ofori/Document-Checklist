@@ -10,6 +10,9 @@ if (jwtSecret.trim() === 'replace-this-with-a-random-secret-at-least-32-characte
   throw new Error('JWT_SECRET must not use the published example placeholder.');
 }
 
+const { loadEmailConfig } = require('./config/email');
+loadEmailConfig();
+
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '1d';
 try {
   const token = jwt.sign({ iat: 1700000000 }, jwtSecret, { expiresIn: jwtExpiresIn });

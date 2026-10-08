@@ -80,6 +80,22 @@ function startWithJwtExpiresIn(expiresIn) {
   return startWithEnvironment(environment);
 }
 
+function startWithEmailConfig({ enabled, from, replyTo } = {}) {
+  const environment = isolatedEnvironment();
+  for (const [name, value] of [
+    ['EMAIL_ENABLED', enabled],
+    ['EMAIL_FROM', from],
+    ['EMAIL_REPLY_TO', replyTo]
+  ]) {
+    if (value === undefined) {
+      delete environment[name];
+    } else {
+      environment[name] = value;
+    }
+  }
+  return startWithEnvironment(environment);
+}
+
 function productionEnvironment() {
   const environment = isolatedEnvironment();
   environment.NODE_ENV = 'production';
@@ -215,6 +231,45 @@ test('accepts the default and a valid configured JWT_EXPIRES_IN', () => {
   ]) {
     const result = startWithJwtExpiresIn(expiresIn);
     assert.equal(result.status, 0, `${description} should allow startup: ${result.stderr}`);
+  }
+});
+
+test('email is disabled by default and when explicitly disabled', () => {
+  assert.equal(startWithEmailConfig().status, 0);
+  assert.equal(startWithEmailConfig({ enabled: 'false' }).status, 0);
+  assert.equal(startWithEmailConfig({ enabled: 'false', from: '', replyTo: '' }).status, 0);
+});
+
+test('accepts enabled email configuration with a valid sender and optional reply-to', () => {
+  for (const options of [
+    { enabled: 'true', from: 'notifications@example.test' },
+    {
+      enabled: 'true',
+      from: ' notifications@example.test ',
+      replyTo: 'support@example.test'
+    }
+  ]) {
+    const result = startWithEmailConfig(options);
+    assert.equal(result.status, 0, result.stderr);
+  }
+});
+
+test('rejects missing or invalid enabled email configuration', () => {
+  for (const options of [
+    { enabled: 'true' },
+    { enabled: 'true', from: 'not-an-email' },
+    { enabled: 'true', from: 'notifications@example.test', replyTo: 'invalid-reply-to' },
+    { enabled: 'true', from: 'notifications@example.test\r\nBcc: attacker@example.test' },
+    {
+      enabled: 'true',
+      from: 'notifications@example.test',
+      replyTo: 'support@example.test\nBcc: attacker@example.test'
+    },
+    { enabled: 'yes', from: 'notifications@example.test' }
+  ]) {
+    const result = startWithEmailConfig(options);
+    assert.notEqual(result.status, 0, JSON.stringify(options));
+    assert.match(result.stderr, /EMAIL_(?:ENABLED|FROM|REPLY_TO) must/);
   }
 });
 

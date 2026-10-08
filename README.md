@@ -31,6 +31,8 @@ The file-backed NeDB databases are intended for one Node.js process using a priv
 
 Uploaded document files are stored privately under `data/uploads/` by default. `DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY` can select another private local directory; it is resolved once at startup and is never controlled by request data. Keep that directory persistent and access-restricted.
 
+Email notifications are disabled by default. Phase 1 provides configuration and a provider-neutral service boundary only; it does not send real email. `EMAIL_ENABLED` accepts `true` or `false` and defaults to `false`. If enabled, `EMAIL_FROM` must be a valid email address; `EMAIL_REPLY_TO` is optional and, when set, must also be valid. A real provider, email verification, outbox, and worker are future phases. The `emailChecklistCompletion` notification preference is an explicit opt-in and defaults to `false`.
+
 The Express app applies Helmet security headers before JSON parsing and API routes. Since this backend serves JSON rather than browser pages, Helmet's Content Security Policy header is disabled; a custom CSP is not needed for the API. If browser pages are added to this server later, define a CSP based on their actual scripts, styles, and resources.
 
 ### Run tests
