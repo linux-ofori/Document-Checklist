@@ -1,5 +1,8 @@
 import { createId } from '../services'
 
+export const LOGOUT_WARNING_MESSAGE =
+  'You’re signed out on this device, but we couldn’t confirm server sign-out.'
+
 export const ACTIONS = {
   HYDRATE: 'HYDRATE',
   HYDRATE_FAILED: 'HYDRATE_FAILED',
@@ -88,7 +91,10 @@ export function appDataReducer(state, action) {
       return { ...state, status: 'error', error: action.payload }
 
     case ACTIONS.AUTH_RESET:
-      return { ...INITIAL_STATE }
+      return {
+        ...INITIAL_STATE,
+        toast: state.toast?.message === LOGOUT_WARNING_MESSAGE ? state.toast : null,
+      }
 
     case ACTIONS.REQUIREMENT_UPDATED:
       return {

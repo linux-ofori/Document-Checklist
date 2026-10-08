@@ -5,6 +5,7 @@ import { Alert, Avatar, Button, Card, Input, LoadingState } from '../components/
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAuth } from '../context/AuthProvider'
+import { LOGOUT_WARNING_MESSAGE } from '../context/appDataReducer'
 import { logout } from '../services'
 import { validateProfileForm } from '../utils/validation'
 import { formatDate, formatDateTime, pluralize } from '../utils/format'
@@ -105,12 +106,16 @@ function ProfileDetailsForm({ profile }) {
 export function ProfilePage() {
   const { navigate } = useActiveRoute()
   const { signOut } = useAuth()
-  const { profile, stats, isLoading, retryHydration } = useAppData()
+  const { profile, stats, isLoading, retryHydration, showToast } = useAppData()
   const handleLogout = async () => {
+    let serverLogoutFailed = false
     try {
       await logout()
     } catch {
-      // Always clear the local session, even when the server cannot be reached.
+      serverLogoutFailed = true
+    }
+    if (serverLogoutFailed) {
+      showToast(LOGOUT_WARNING_MESSAGE, 'warning')
     }
     signOut()
     navigate(ROUTES.login)
