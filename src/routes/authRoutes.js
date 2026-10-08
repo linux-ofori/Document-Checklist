@@ -152,8 +152,8 @@ function validateProfileUpdates(body, currentPreferences) {
       errors.push('Phone must be a string or null.');
     } else {
       const phone = body.phone.trim();
-      if (phone.length > 40) {
-        errors.push('Phone must not exceed 40 characters.');
+      if (phone && !phonePattern.test(phone)) {
+        errors.push('Phone must be a valid phone number.');
       } else {
         updates.phone = phone || null;
       }

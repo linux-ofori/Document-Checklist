@@ -1077,6 +1077,37 @@ test('authentication, account management, and document API', async (t) => {
     });
     assertSanitizedUser(profileUpdate.payload.user);
 
+    const omittedPhoneUpdate = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { name: 'Renamed User' }
+    });
+    assert.equal(omittedPhoneUpdate.status, 200);
+    assert.equal(omittedPhoneUpdate.payload.user.phone, '+233 24 123 4567');
+
+    const nullPhoneUpdate = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { phone: null }
+    });
+    assert.equal(nullPhoneUpdate.status, 200);
+    assert.equal(nullPhoneUpdate.payload.user.phone, null);
+
+    const emptyPhoneUpdate = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { phone: '' }
+    });
+    assert.equal(emptyPhoneUpdate.status, 200);
+    assert.equal(emptyPhoneUpdate.payload.user.phone, null);
+
+    const resetPhoneUpdate = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { phone: '+233 24 123 4567' }
+    });
+    assert.equal(resetPhoneUpdate.status, 200);
+
     const partialPreferenceUpdate = await request('/api/auth/me', {
       method: 'PUT',
       token: primaryToken,
@@ -1095,9 +1126,17 @@ test('authentication, account management, and document API', async (t) => {
       }
     });
 
+    const phoneBeforeInvalidUpdates = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { phone: '+233 24 123 4567' }
+    });
+    assert.equal(phoneBeforeInvalidUpdates.status, 200);
+
     for (const body of [
       { phone: 123 },
-      { phone: 'p'.repeat(41) },
+      { phone: '1'.repeat(21) },
+      { phone: '+233 24 abc' },
       { unsupported: true },
       { tokenVersion: 1 },
       { preferences: { unknown: true } },
@@ -1109,9 +1148,13 @@ test('authentication, account management, and document API', async (t) => {
       assert.equal(invalid.status, 400, JSON.stringify(body));
     }
 
+    const phoneAfterInvalidUpdates = await request('/api/auth/me', { token: primaryToken });
+    assert.equal(phoneAfterInvalidUpdates.status, 200);
+    assert.equal(phoneAfterInvalidUpdates.payload.user.phone, '+233 24 123 4567');
+
     const unchangedProfile = await request('/api/auth/me', { token: primaryToken });
     assert.equal(unchangedProfile.status, 200);
-    assert.equal(unchangedProfile.payload.user.phone, null);
+    assert.equal(unchangedProfile.payload.user.phone, '+233 24 123 4567');
     assert.deepEqual(unchangedProfile.payload.user.preferences, {
       notifications: {
         documentExpiry: false,
