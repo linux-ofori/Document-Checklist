@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { after, test } = require('node:test');
 const { prepareDatabaseFile } = require('../src/config/databasePaths');
+const { createCorsOptions } = require('../src/config/cors');
 
 const temporaryWorkingDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), 'document-checklist-config-test-')
@@ -38,6 +39,7 @@ function isolatedEnvironment() {
   };
 
   delete environment.TRUSTED_PROXY_IPS;
+  delete environment.CORS_ALLOWED_ORIGINS;
   delete environment.JWT_EXPIRES_IN;
   for (const variable of rateLimitEnvironmentVariables) {
     delete environment[variable];
@@ -77,6 +79,25 @@ function startWithJwtExpiresIn(expiresIn) {
   return startWithEnvironment(environment);
 }
 
+function productionEnvironment() {
+  const environment = isolatedEnvironment();
+  environment.NODE_ENV = 'production';
+  environment.TRUSTED_PROXY_IPS = '127.0.0.1';
+  environment.CORS_ALLOWED_ORIGINS = 'https://frontend.example.test';
+  return environment;
+}
+
+function startWithCorsOrigins(value) {
+  const environment = productionEnvironment();
+  if (value === undefined) {
+    delete environment.CORS_ALLOWED_ORIGINS;
+  } else {
+    environment.CORS_ALLOWED_ORIGINS = value;
+  }
+
+  return startWithEnvironment(environment);
+}
+
 function startWithDatabasePaths(
   usersDatabasePath,
   documentsDatabasePath,
@@ -89,6 +110,64 @@ function startWithDatabasePaths(
 
   return startWithEnvironment(environment);
 }
+
+test('defaults to the local frontend origin outside production', () => {
+  const options = createCorsOptions({ NODE_ENV: 'development' });
+  options.origin('http://localhost:5173', (_error, allowedOrigin) => {
+    assert.equal(allowedOrigin, 'http://localhost:5173');
+  });
+  options.origin('http://localhost:5174', (_error, allowedOrigin) => {
+    assert.equal(allowedOrigin, false);
+  });
+});
+
+test('trims and matches configured origins exactly', () => {
+  const options = createCorsOptions({
+    NODE_ENV: 'development',
+    CORS_ALLOWED_ORIGINS: ' https://frontend.example.test, http://localhost:5173 '
+  });
+  for (const origin of ['https://frontend.example.test', 'http://localhost:5173']) {
+    options.origin(origin, (_error, allowedOrigin) => assert.equal(allowedOrigin, origin));
+  }
+  options.origin('https://sub.frontend.example.test', (_error, allowedOrigin) => {
+    assert.equal(allowedOrigin, false);
+  });
+});
+
+test('requires CORS_ALLOWED_ORIGINS in production', () => {
+  const result = startWithCorsOrigins(undefined);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CORS_ALLOWED_ORIGINS must be configured in production\./);
+});
+
+test('rejects malformed and non-exact CORS origins at startup', () => {
+  for (const origin of [
+    'not-an-origin',
+    'https://frontend.example.test/path',
+    'https://user:pass@frontend.example.test',
+    'https://frontend.example.test?query=1',
+    'https://frontend.example.test#fragment',
+    'https://frontend.example.test,'
+  ]) {
+    const result = startWithCorsOrigins(origin);
+    assert.notEqual(result.status, 0, `${origin} should fail startup`);
+    assert.match(result.stderr, /CORS_ALLOWED_ORIGINS must contain/);
+  }
+});
+
+test('rejects wildcard and non-HTTPS production CORS origins at startup', () => {
+  for (const origin of ['https://*.example.test', 'http://frontend.example.test']) {
+    const result = startWithCorsOrigins(origin);
+    assert.notEqual(result.status, 0, `${origin} should fail startup`);
+    assert.match(
+      result.stderr,
+      origin.includes('*')
+        ? /CORS_ALLOWED_ORIGINS must contain exact origins/
+        : /CORS_ALLOWED_ORIGINS must use HTTPS in production/
+    );
+  }
+});
 
 test('fails startup when the JWT secret is missing, empty, whitespace-only, or too short', () => {
   for (const [description, secret] of [
@@ -176,21 +255,19 @@ test('fails startup for invalid login and registration rate-limit values', () =>
 });
 
 test('requires explicit trusted proxy addresses in production', () => {
-  const missingProxy = isolatedEnvironment();
-  missingProxy.NODE_ENV = 'production';
+  const missingProxy = productionEnvironment();
+  delete missingProxy.TRUSTED_PROXY_IPS;
   const missingResult = startWithEnvironment(missingProxy);
   assert.notEqual(missingResult.status, 0);
   assert.match(missingResult.stderr, /TRUSTED_PROXY_IPS must identify the HTTPS-terminating proxy/);
 
-  const broadProxy = isolatedEnvironment();
-  broadProxy.NODE_ENV = 'production';
+  const broadProxy = productionEnvironment();
   broadProxy.TRUSTED_PROXY_IPS = '0.0.0.0/0';
   const broadResult = startWithEnvironment(broadProxy);
   assert.notEqual(broadResult.status, 0);
   assert.match(broadResult.stderr, /TRUSTED_PROXY_IPS must contain only valid IP addresses or CIDRs\./);
 
-  const trustedProxy = isolatedEnvironment();
-  trustedProxy.NODE_ENV = 'production';
+  const trustedProxy = productionEnvironment();
   trustedProxy.TRUSTED_PROXY_IPS = '127.0.0.1,::1/128';
   const trustedResult = startWithEnvironment(trustedProxy);
   assert.equal(trustedResult.status, 0, trustedResult.stderr);

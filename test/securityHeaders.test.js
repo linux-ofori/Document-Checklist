@@ -9,6 +9,7 @@ const testDataDirectory = fs.mkdtempSync(path.join(dataDirectory, '.test-securit
 process.env.JWT_SECRET = 'document-checklist-security-header-test-secret';
 process.env.NODE_ENV = 'production';
 process.env.TRUSTED_PROXY_IPS = '127.0.0.1';
+process.env.CORS_ALLOWED_ORIGINS = 'https://frontend.example.test, https://admin.example.test';
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
@@ -61,30 +62,38 @@ function assertSecurityHeaders(response) {
   assert.equal(response.headers.get('content-security-policy'), null);
 }
 
-test('allows the local frontend CORS preflight with required methods and headers', async () => {
+test('allows a configured production frontend CORS preflight with required methods and headers', async () => {
   const response = await request('/api/documents', {
     method: 'OPTIONS',
     headers: {
-      origin: 'http://localhost:5173',
+      origin: 'https://frontend.example.test',
       'access-control-request-method': 'POST',
       'access-control-request-headers': 'Content-Type,Authorization'
     }
   });
 
   assert.equal(response.status, 204);
-  assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+  assert.equal(response.headers.get('access-control-allow-origin'), 'https://frontend.example.test');
   assert.equal(response.headers.get('access-control-allow-methods'), 'GET,HEAD,POST,PUT,PATCH,DELETE');
   assert.equal(response.headers.get('access-control-allow-headers'), 'Content-Type,Authorization');
+  assert.equal(response.headers.get('access-control-allow-credentials'), null);
   assertSecurityHeaders(response);
 });
 
-test('does not allow a different origin', async () => {
-  const response = await request('/api/auth/me', {
-    headers: { origin: 'http://localhost:5174' }
+test('allows multiple configured origins and rejects unconfigured origins', async () => {
+  const allowedResponse = await request('/api/auth/me', {
+    headers: { origin: 'https://admin.example.test' }
   });
+  const rejectedResponses = await Promise.all([
+    request('/api/auth/me', { headers: { origin: 'https://unconfigured.example.test' } }),
+    request('/api/auth/me', { headers: { origin: 'http://localhost:5173' } })
+  ]);
 
-  assert.equal(response.headers.get('access-control-allow-origin'), null);
-  assertSecurityHeaders(response);
+  assert.equal(allowedResponse.headers.get('access-control-allow-origin'), 'https://admin.example.test');
+  for (const response of rejectedResponses) {
+    assert.equal(response.headers.get('access-control-allow-origin'), null);
+    assertSecurityHeaders(response);
+  }
 });
 
 test('sets Helmet headers on successful and error API responses', async () => {
