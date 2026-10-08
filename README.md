@@ -70,6 +70,7 @@ The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There
 | `name` for accounts | Required on registration; 2–100 characters after trimming. Optional on profile updates. |
 | `email` | Required on registration and login; valid email format, at most 254 characters. Trimmed and lowercased. Optional on profile updates. |
 | `password` | Required on registration and login; 8–128 characters and at most 72 UTF-8 bytes. |
+| Registration `phone` | Optional; trimmed and must match `^[+()-\s\d]{7,20}$` when non-empty. Omitted or blank values are stored as `null`. |
 | Document `name` | Required on create; 1–150 characters after trimming. Optional on update. |
 | Document `completed` | Optional on create and update; must be a boolean. Defaults to `false` on create. |
 | Document `documentType` | Optional and nullable; otherwise one of `identity-card`, `photograph`, `birth-certificate`, `application-form`, `proof-of-address`, `supporting-document`, `fee-receipt`, `business-registration-certificate`, `company-constitution`, `tax-clearance`, `bank-statement`, `medical-report`, `drivers-licence`, `test-results`, `transcript`, `recommendation-letter`, `old-passport`, `police-clearance`, `marriage-certificate`, or `other`. |
@@ -94,13 +95,14 @@ Profile updates must include at least one of `name` or `email`. Document updates
 
 **Authentication:** Not required. Creates an account.
 
-Required JSON fields: `name`, `email`, `password`.
+Required JSON fields: `name`, `email`, `password`. Optional field: `phone`, a trimmed phone number matching `^[+()-\s\d]{7,20}$`.
 
 ```json
 {
 	"name": "A User",
 	"email": "user@example.com",
-	"password": "CorrectHorse12!"
+	"password": "CorrectHorse12!",
+	"phone": "+233 24 000 0000"
 }
 ```
 
@@ -112,6 +114,7 @@ Required JSON fields: `name`, `email`, `password`.
 		"id": "generated-user-id",
 		"name": "A User",
 		"email": "user@example.com",
+		"phone": "+233 24 000 0000",
 		"createdAt": "2026-10-07T12:00:00.000Z",
 		"updatedAt": "2026-10-07T12:00:00.000Z"
 	},
@@ -119,7 +122,7 @@ Required JSON fields: `name`, `email`, `password`.
 }
 ```
 
-The user object is sanitized and does not include the password. Possible errors: `400` validation error, `409` duplicate email, `429` registration rate limit, or a shared request/server error below.
+Omitted or blank phone values are stored and returned as `null`. The sanitized user response may contain `phone`, but does not include the password or internal account fields. Possible errors: `400` validation error, `409` duplicate email, `429` registration rate limit, or a shared request/server error below.
 
 #### `POST /api/auth/login`
 

@@ -38,14 +38,14 @@ function toPublicUser(user) {
   };
 }
 
-function createUser({ name, email, password }) {
+function createUser({ name, email, password, phone = null }) {
   const timestamp = new Date().toISOString();
   return new Promise((resolve, reject) => {
     database.insert({
       name,
       email,
       password,
-      phone: null,
+      phone: phone || null,
       preferences: { notifications: { ...DEFAULT_NOTIFICATION_PREFERENCES } },
       tokenVersion: 0,
       createdAt: timestamp,

@@ -30,6 +30,7 @@ const authRoutes = require('../src/routes/authRoutes');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const {
   deleteUserById,
+  findUserByEmail,
   findUserById,
   incrementUserTokenVersionById,
   markUserDeletingById,
@@ -419,6 +420,76 @@ test('authentication, account management, and document API', async (t) => {
       body: { name: 'Another User', email: 'PRIMARY@example.com', password: 'correct-horse-2' }
     });
     assert.equal(duplicate.status, 409);
+  });
+
+  await t.test('registers and returns an optional normalized phone number', async () => {
+    const registered = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Phone Registration User',
+        email: 'phone-registration@example.com',
+        password: 'phone-registration-password',
+        phone: '  +233 24 123 4567  '
+      }
+    });
+
+    assert.equal(registered.status, 201);
+    assert.equal(registered.payload.user.phone, '+233 24 123 4567');
+    assertSanitizedUser(registered.payload.user);
+
+    const storedUser = await findUserById(registered.payload.user.id);
+    assert.equal(storedUser.phone, '+233 24 123 4567');
+
+    const currentUser = await request('/api/auth/me', { token: registered.payload.token });
+    assert.equal(currentUser.status, 200);
+    assert.equal(currentUser.payload.user.phone, '+233 24 123 4567');
+    assertSanitizedUser(currentUser.payload.user);
+  });
+
+  await t.test('stores null for an omitted or blank registration phone', async () => {
+    const omittedPhone = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Omitted Phone User',
+        email: 'omitted-phone@example.com',
+        password: 'omitted-phone-password'
+      }
+    });
+    assert.equal(omittedPhone.status, 201);
+    assert.equal(omittedPhone.payload.user.phone, null);
+    assert.equal((await findUserById(omittedPhone.payload.user.id)).phone, null);
+
+    const blankPhone = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Blank Phone User',
+        email: 'blank-phone@example.com',
+        password: 'blank-phone-password',
+        phone: '   '
+      }
+    });
+    assert.equal(blankPhone.status, 201);
+    assert.equal(blankPhone.payload.user.phone, null);
+    assert.equal((await findUserById(blankPhone.payload.user.id)).phone, null);
+  });
+
+  await t.test('rejects invalid registration phone without creating an account', async () => {
+    const invalid = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Invalid Phone User',
+        email: 'invalid-phone@example.com',
+        password: 'invalid-phone-password',
+        phone: '+233 24 abc'
+      }
+    });
+
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(invalid.payload, {
+      error: 'Validation failed.',
+      details: ['Phone must be a valid phone number.']
+    });
+    assert.equal(await findUserByEmail('invalid-phone@example.com'), null);
   });
 
   await t.test('logs in with correct credentials and rejects incorrect credentials', async () => {

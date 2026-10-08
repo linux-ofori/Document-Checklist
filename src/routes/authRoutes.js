@@ -22,6 +22,7 @@ const {
 
 const router = express.Router();
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const phonePattern = /^[+()\-\s\d]{7,20}$/;
 
 function positiveIntegerEnvironmentValue(name, defaultValue) {
   const configuredValue = process.env[name];
@@ -72,6 +73,7 @@ function validateCredentials(body, isRegistration) {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
   const password = typeof body.password === 'string' ? body.password : '';
+  let phone = null;
 
   if (isRegistration && (name.length < 2 || name.length > 100)) {
     errors.push('Name must be between 2 and 100 characters.');
@@ -89,7 +91,20 @@ function validateCredentials(body, isRegistration) {
     errors.push('Password must not exceed 72 UTF-8 bytes.');
   }
 
-  return { errors, name, email, password };
+  if (isRegistration && Object.prototype.hasOwnProperty.call(body, 'phone')) {
+    if (typeof body.phone !== 'string') {
+      errors.push('Phone must be a valid phone number.');
+    } else {
+      const normalizedPhone = body.phone.trim();
+      if (normalizedPhone && !phonePattern.test(normalizedPhone)) {
+        errors.push('Phone must be a valid phone number.');
+      } else {
+        phone = normalizedPhone || null;
+      }
+    }
+  }
+
+  return { errors, name, email, password, phone };
 }
 
 function isPlainObject(value) {
@@ -278,7 +293,8 @@ router.post('/register', registrationRateLimit, async (request, response, next) 
     const user = await createUser({
       name: credentials.name,
       email: credentials.email,
-      password: passwordHash
+      password: passwordHash,
+      phone: credentials.phone
     });
 
     return response.status(201).json({
