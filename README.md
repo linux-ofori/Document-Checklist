@@ -3,7 +3,7 @@ A web application that helps users organize and track required documents.
 
 ## Authentication backend
 
-The backend is a Node.js and Express API. User, document, and application records are stored in separate local file-backed databases at `data/users.db`, `data/documents.db`, and `data/applications.db`; passwords are hashed with bcrypt and are never included in API responses.
+The backend is a Node.js and Express API. User, document, application, and notification records are stored in separate local file-backed databases at `data/users.db`, `data/documents.db`, `data/applications.db`, and `data/notifications.db`; passwords are hashed with bcrypt and are never included in API responses.
 
 ### Run locally
 
@@ -41,7 +41,7 @@ Run the integration tests with Node's built-in test runner:
 npm test
 ```
 
-The tests use temporary user, document, and application databases and upload storage under `data/`, a test-only JWT secret, and an ephemeral local port. Test data is removed when the test run finishes; the development databases, uploads, and `.env` are not used or modified.
+The tests use temporary user, document, application, and notification databases and upload storage under `data/`, a test-only JWT secret, and an ephemeral local port. Test data is removed when the test run finishes; the development databases, uploads, and `.env` are not used or modified.
 
 ## API reference
 
@@ -252,6 +252,49 @@ Possible errors: `400` validation error, `401` authentication error, or a shared
 **Success:** `200 OK`, `{ "application": { ... } }` with the updated application. Possible errors: `400` validation error or a document linked to another application, `401` authentication error, `404` missing/non-owned application, unknown requirement key, or missing/non-owned document, or a shared server error below.
 
 There is no application delete, general application update, submission, or reviewer workflow endpoint.
+
+### Notification endpoints
+
+All notification endpoints require authentication. Notifications are stored separately in `data/notifications.db`; configure another private database path with `DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH`. Each notification is scoped to its owner. Listing returns only the authenticated user's notifications, newest first. Public responses include an `id` but never expose the internal `_id` or `ownerId`.
+
+#### `GET /api/notifications`
+
+**Authentication:** Required. Lists the authenticated user's notifications. No request body.
+
+**Success:** `200 OK`
+
+```json
+{
+	"notifications": [
+		{
+			"id": "a1b2c3d4e5f6g7h8",
+			"kind": "application",
+			"title": "Checklist requirement completed",
+			"body": "Ghana Card for Passport Application is complete.",
+			"severity": "success",
+			"isRead": false,
+			"applicationId": "app-generated-application-id",
+			"documentId": "a1b2c3d4e5f6g7h8",
+			"dueDate": null,
+			"createdAt": "2026-10-07T12:00:00.000Z"
+		}
+	]
+}
+```
+
+#### `PATCH /api/notifications/:id/read`
+
+**Authentication:** Required. Marks one notification owned by the caller as read. Repeating the operation succeeds with the same notification representation. The ID must be exactly 16 alphanumeric characters. No request body fields are accepted.
+
+**Success:** `200 OK`, `{ "notification": { ... } }` using the public notification shape above. Possible errors: `400` malformed ID or unexpected body field, `401` authentication error, `404` missing or non-owned notification, or a shared server error below.
+
+#### `POST /api/notifications/read-all`
+
+**Authentication:** Required. Marks only the caller's unread notifications as read. No request body fields are accepted.
+
+**Success:** `200 OK`, `{ "updatedCount": 2 }`; an account with no unread notifications receives `{ "updatedCount": 0 }`. Possible errors: `400` unexpected body field, `401` authentication error, or a shared server error below.
+
+When an application requirement transitions from `missing` or `in-progress` to `completed`, the backend best-effort persists a new application notification. Repeated completion does not create another notification; reopening and completing the requirement later creates a new one. The notification content and application/document references are generated from server-side records. If notification persistence fails, the requirement update still succeeds and the failure is logged.
 
 ### Document endpoints
 

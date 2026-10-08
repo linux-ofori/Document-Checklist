@@ -35,7 +35,8 @@ function isolatedEnvironment() {
     JWT_SECRET: 'configuration-test-only-jwt-secret-123456',
     DOCUMENT_CHECKLIST_USERS_DB_PATH: path.join(temporaryWorkingDirectory, 'users.db'),
     DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(temporaryWorkingDirectory, 'documents.db'),
-    DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH: path.join(temporaryWorkingDirectory, 'applications.db')
+    DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH: path.join(temporaryWorkingDirectory, 'applications.db'),
+    DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH: path.join(temporaryWorkingDirectory, 'notifications.db')
   };
 
   delete environment.TRUSTED_PROXY_IPS;
@@ -101,12 +102,14 @@ function startWithCorsOrigins(value) {
 function startWithDatabasePaths(
   usersDatabasePath,
   documentsDatabasePath,
-  applicationsDatabasePath = path.join(temporaryWorkingDirectory, 'applications.db')
+  applicationsDatabasePath = path.join(temporaryWorkingDirectory, 'applications.db'),
+  notificationsDatabasePath = path.join(temporaryWorkingDirectory, 'notifications.db')
 ) {
   const environment = isolatedEnvironment();
   environment.DOCUMENT_CHECKLIST_USERS_DB_PATH = usersDatabasePath;
   environment.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = documentsDatabasePath;
   environment.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = applicationsDatabasePath;
+  environment.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = notificationsDatabasePath;
 
   return startWithEnvironment(environment);
 }
@@ -305,4 +308,32 @@ test('rejects application database paths that collide with another database', ()
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /The users and applications database paths must be different\./);
+});
+
+test('rejects a notification database path that aliases another database path', () => {
+  const usersDatabasePath = path.join(temporaryWorkingDirectory, 'users.db');
+  const notificationsDatabasePath = `${path.join(temporaryWorkingDirectory, 'nested')}`
+    + `${path.sep}..${path.sep}users.db`;
+  const result = startWithDatabasePaths(
+    usersDatabasePath,
+    path.join(temporaryWorkingDirectory, 'documents.db'),
+    path.join(temporaryWorkingDirectory, 'applications.db'),
+    notificationsDatabasePath
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /The users and notifications database paths must be different\./);
+});
+
+test('creates the notification database at its configured path', () => {
+  const notificationsDatabasePath = path.join(temporaryWorkingDirectory, 'custom-notifications.db');
+  const result = startWithDatabasePaths(
+    path.join(temporaryWorkingDirectory, 'users.db'),
+    path.join(temporaryWorkingDirectory, 'documents.db'),
+    path.join(temporaryWorkingDirectory, 'applications.db'),
+    notificationsDatabasePath
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.existsSync(notificationsDatabasePath), true);
 });

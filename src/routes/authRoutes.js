@@ -7,6 +7,7 @@ const withAccountOperationLock = require('../models/accountOperationLock');
 const { removeStoredFile } = require('../config/fileStorage');
 const { deleteDocumentsByOwnerId, findDocumentsByOwnerId } = require('../models/documentModel');
 const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
+const { deleteAllNotifications } = require('../services/notificationService');
 const {
   createUser,
   changeUserPasswordById,
@@ -267,6 +268,7 @@ async function completeAccountDeletion(userId) {
 
   await deleteDocumentsByOwnerId(userId);
   await deleteApplicationsByOwnerId(userId);
+  await deleteAllNotifications(userId);
   return deleteUserById(userId);
 }
 

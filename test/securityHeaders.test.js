@@ -13,6 +13,7 @@ process.env.CORS_ALLOWED_ORIGINS = 'https://frontend.example.test, https://admin
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
+process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = path.join(testDataDirectory, 'notifications.db');
 
 const app = require('../src/server');
 let server;

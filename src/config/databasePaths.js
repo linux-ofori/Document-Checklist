@@ -21,6 +21,10 @@ const applicationsDatabasePath = resolveDatabasePath(
   'DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH',
   'applications.db'
 );
+const notificationsDatabasePath = resolveDatabasePath(
+  'DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH',
+  'notifications.db'
+);
 const uploadsDirectory = path.resolve(
   process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY || path.join(dataDirectory, 'uploads')
 );
@@ -28,7 +32,8 @@ const uploadsDirectory = path.resolve(
 const databasePaths = [
   ['users', usersDatabasePath],
   ['documents', documentsDatabasePath],
-  ['applications', applicationsDatabasePath]
+  ['applications', applicationsDatabasePath],
+  ['notifications', notificationsDatabasePath]
 ];
 
 for (let index = 0; index < databasePaths.length; index += 1) {
@@ -61,6 +66,7 @@ module.exports = {
   usersDatabasePath,
   documentsDatabasePath,
   applicationsDatabasePath,
+  notificationsDatabasePath,
   uploadsDirectory,
   prepareDatabaseFile
 };

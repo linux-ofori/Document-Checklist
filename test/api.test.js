@@ -17,6 +17,7 @@ delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
+process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = path.join(testDataDirectory, 'notifications.db');
 process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY = path.join(testDataDirectory, 'uploads');
 process.env.LOGIN_RATE_LIMIT_MAX = '30';
 process.env.PASSWORD_CHANGE_RATE_LIMIT_MAX = '30';
@@ -28,6 +29,7 @@ const documentsDatabase = require('../src/config/documentsDatabase');
 const { uploadsDirectory } = require('../src/config/databasePaths');
 const authRoutes = require('../src/routes/authRoutes');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
+const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
 const {
   deleteUserById,
   findUserByEmail,
@@ -1342,11 +1344,23 @@ test('authentication, account management, and document API', async (t) => {
       method: 'POST', token: account.payload.token, body: { name: 'Recover on startup' }
     });
     assert.equal(document.status, 201);
+    const application = await request('/api/applications', {
+      method: 'POST',
+      token: account.payload.token,
+      body: { processId: 'passport' }
+    });
+    const completedRequirement = await request(
+      `/api/applications/${application.payload.application.id}/requirements/identity-card`,
+      { method: 'PATCH', token: account.payload.token, body: { status: 'completed' } }
+    );
+    assert.equal(completedRequirement.status, 200);
+    assert.equal((await findNotificationsByOwnerId(accountId)).length, 1);
 
     assert.ok(await markUserDeletingById(accountId));
     await authRoutes.recoverPendingAccountDeletions();
 
     assert.deepEqual(await findDocumentsByOwnerId(accountId), []);
+    assert.deepEqual(await findNotificationsByOwnerId(accountId), []);
     assert.equal(await findUserById(accountId), null);
   });
 

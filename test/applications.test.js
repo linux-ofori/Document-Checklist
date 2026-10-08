@@ -11,10 +11,13 @@ delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
+process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = path.join(testDataDirectory, 'notifications.db');
 process.env.REGISTRATION_RATE_LIMIT_MAX = '50';
 
 const app = require('../src/server');
 const applicationsDatabase = require('../src/config/applicationsDatabase');
+const notificationsDatabase = require('../src/config/notificationsDatabase');
+const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
 const { findApplicationById } = require('../src/models/applicationModel');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const { findUserById } = require('../src/models/userModel');
@@ -535,6 +538,8 @@ test('account deletion removes only the owner applications and embedded checklis
   );
   assert.equal(updateA.status, 200);
   assert.equal(updateB.status, 200);
+  assert.equal(updateA.payload.notification.body, 'Ghana Card for Passport Application is complete.');
+  assert.equal(updateB.payload.notification.body, 'Ghana Card for Passport Application is complete.');
   assert.equal(
     updateA.payload.application.requirements.find((entry) => entry.key === 'identity-card').status,
     'completed'
@@ -548,6 +553,8 @@ test('account deletion removes only the owner applications and embedded checklis
   assert.equal(deleted.status, 200);
   assert.equal(await findApplicationById(applicationA.id, userA.user.id), null);
   assert.equal(await findApplicationById(applicationB.id, userB.user.id) !== null, true);
+  assert.deepEqual(await findNotificationsByOwnerId(userA.user.id), []);
+  assert.equal((await findNotificationsByOwnerId(userB.user.id)).length, 1);
 
   const retainedApplication = await request(`/api/applications/${applicationB.id}`, {
     token: userB.token
@@ -557,4 +564,141 @@ test('account deletion removes only the owner applications and embedded checklis
     .find((entry) => entry.key === 'identity-card');
   assert.equal(retainedRequirement.status, 'completed');
   assert.ok(retainedRequirement.completedAt);
+});
+
+test('creates notifications only on transitions to completed and supports completion after reopening', async () => {
+  const user = await registerUser('Completion Owner', 'completion-owner@example.com');
+  const applicationResponse = await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport', name: 'My Passport Application' }
+  });
+  const application = applicationResponse.payload.application;
+  const documentResponse = await request('/api/documents', {
+    method: 'POST',
+    token: user.token,
+    body: {
+      name: 'Identity document',
+      applicationId: application.id,
+      documentType: 'identity-card'
+    }
+  });
+  const documentId = documentResponse.payload.document.id;
+
+  const firstCompletion = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    {
+      method: 'PATCH',
+      token: user.token,
+      body: { status: 'completed', documentId }
+    }
+  );
+  assert.equal(firstCompletion.status, 200);
+  assert.deepEqual(Object.keys(firstCompletion.payload.notification).sort(), [
+    'applicationId', 'body', 'createdAt', 'documentId', 'dueDate', 'id',
+    'isRead', 'kind', 'severity', 'title'
+  ]);
+  assert.equal(firstCompletion.payload.notification.kind, 'application');
+  assert.equal(firstCompletion.payload.notification.severity, 'success');
+  assert.equal(firstCompletion.payload.notification.title, 'Checklist requirement completed');
+  assert.equal(firstCompletion.payload.notification.body, 'Ghana Card for My Passport Application is complete.');
+  assert.equal(firstCompletion.payload.notification.applicationId, application.id);
+  assert.equal(firstCompletion.payload.notification.documentId, documentId);
+  assert.equal(firstCompletion.payload.notification.dueDate, null);
+  assert.equal(firstCompletion.payload.notification.isRead, false);
+  assert.equal(Object.hasOwn(firstCompletion.payload.notification, '_id'), false);
+  assert.equal(Object.hasOwn(firstCompletion.payload.notification, 'ownerId'), false);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 1);
+
+  const completedAgain = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(completedAgain.status, 200);
+  assert.equal(Object.hasOwn(completedAgain.payload, 'notification'), false);
+
+  const reopenedToInProgress = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'in-progress' } }
+  );
+  assert.equal(reopenedToInProgress.status, 200);
+  assert.equal(Object.hasOwn(reopenedToInProgress.payload, 'notification'), false);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 1);
+
+  const completedAgainFromInProgress = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(completedAgainFromInProgress.status, 200);
+  assert.equal(Object.hasOwn(completedAgainFromInProgress.payload, 'notification'), true);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 2);
+
+  const reopened = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'missing' } }
+  );
+  assert.equal(reopened.status, 200);
+  assert.equal(Object.hasOwn(reopened.payload, 'notification'), false);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 2);
+
+  const completedAfterReopen = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(completedAfterReopen.status, 200);
+  assert.equal(Object.hasOwn(completedAfterReopen.payload, 'notification'), true);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 3);
+
+  const started = await request(
+    `/api/applications/${application.id}/requirements/photograph`,
+    { method: 'PATCH', token: user.token, body: { status: 'in-progress' } }
+  );
+  assert.equal(started.status, 200);
+  assert.equal(Object.hasOwn(started.payload, 'notification'), false);
+
+  const completedFromInProgress = await request(
+    `/api/applications/${application.id}/requirements/photograph`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(completedFromInProgress.status, 200);
+  assert.equal(Object.hasOwn(completedFromInProgress.payload, 'notification'), true);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 4);
+});
+
+test('notification persistence failure does not fail a completed requirement update', async () => {
+  const user = await registerUser('Notification Failure Owner', 'notification-failure@example.com');
+  const application = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  const originalInsert = notificationsDatabase.insert;
+  const originalConsoleError = console.error;
+  let loggedError;
+  notificationsDatabase.insert = function insert(_notification, callback) {
+    callback(new Error('Injected notification persistence failure.'));
+  };
+  console.error = (message, error) => {
+    loggedError = { message, error };
+  };
+
+  try {
+    const result = await request(
+      `/api/applications/${application.id}/requirements/identity-card`,
+      { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+    );
+    assert.equal(result.status, 200);
+    assert.equal(
+      result.payload.application.requirements.find(({ key }) => key === 'identity-card').status,
+      'completed'
+    );
+    assert.equal(Object.hasOwn(result.payload, 'notification'), false);
+  } finally {
+    notificationsDatabase.insert = originalInsert;
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(loggedError.message, 'Unable to persist application completion notification.');
+  assert.match(loggedError.error.message, /Injected notification persistence failure/);
+  assert.deepEqual(await findNotificationsByOwnerId(user.user.id), []);
 });

@@ -58,6 +58,7 @@ const { createCorsOptions } = require('./config/cors');
 const authRoutes = require('./routes/authRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 require('./config/database');
 
 const app = express();
@@ -79,6 +80,7 @@ app.use(express.json({ limit: '10kb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.use('/api', (request, response) => {
   return response.status(404).json({ error: 'Route not found.' });

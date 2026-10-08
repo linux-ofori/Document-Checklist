@@ -11,6 +11,10 @@ const {
   updateApplicationRequirements
 } = require('../models/applicationModel');
 const { getProcess } = require('../config/processCatalog');
+const {
+  createRequirementCompletionNotification,
+  toPublicNotification
+} = require('../services/notificationService');
 
 const router = express.Router();
 const applicationIdPattern = /^app-[a-z0-9][a-z0-9-]{0,59}$/i;
@@ -196,6 +200,7 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
       }
 
       const current = application.requirements.find((requirement) => requirement.key === definition.key);
+      const previousStatus = current ? current.status : 'missing';
       const { status, documentId, hasDocumentId } = validation.input;
       let linkedDocumentId = current ? current.documentId : null;
 
@@ -232,7 +237,25 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
         requirements
       );
 
-      return updated ? { kind: 'updated', application: updated } : { kind: 'missing-application' };
+      if (!updated) {
+        return { kind: 'missing-application' };
+      }
+
+      let notification;
+      if ((previousStatus === 'missing' || previousStatus === 'in-progress') && status === 'completed') {
+        try {
+          notification = toPublicNotification(await createRequirementCompletionNotification({
+            ownerId: request.user.id,
+            application,
+            requirement: definition,
+            documentId: linkedDocumentId
+          }));
+        } catch (error) {
+          console.error('Unable to persist application completion notification.', error);
+        }
+      }
+
+      return { kind: 'updated', application: updated, notification };
     });
 
     if (result.kind === 'missing-owner') {
@@ -260,7 +283,11 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
       });
     }
 
-    return response.json({ application: toPublicApplication(result.application) });
+    const payload = { application: toPublicApplication(result.application) };
+    if (result.notification) {
+      payload.notification = result.notification;
+    }
+    return response.json(payload);
   } catch (error) {
     return next(error);
   }
