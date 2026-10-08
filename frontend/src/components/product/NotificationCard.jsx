@@ -25,7 +25,13 @@ const SEVERITY_ICONS = {
   success: CircleCheck,
 }
 
-export function NotificationCard({ notification, onRead, onOpenApplication, actionLabel = 'View checklist' }) {
+export function NotificationCard({
+  notification,
+  onRead,
+  onOpenApplication,
+  onOpenDocument,
+  actionLabel = 'View checklist',
+}) {
   const kind = KIND_META[notification.kind] ?? KIND_META.system
   const SeverityIcon = SEVERITY_ICONS[notification.severity] ?? Bell
 
@@ -68,7 +74,7 @@ export function NotificationCard({ notification, onRead, onOpenApplication, acti
       </div>
 
       <div className="notification-card__actions">
-        {notification.applicationId ? (
+        {notification.applicationId && onOpenApplication ? (
           <button
             type="button"
             className="notification-card__action"
@@ -78,11 +84,21 @@ export function NotificationCard({ notification, onRead, onOpenApplication, acti
           </button>
         ) : null}
 
+        {notification.documentId && onOpenDocument ? (
+          <button
+            type="button"
+            className="notification-card__action"
+            onClick={() => onOpenDocument(notification)}
+          >
+            View document
+          </button>
+        ) : null}
+
         {!notification.isRead ? (
           <button
             type="button"
             className="notification-card__action notification-card__action--muted"
-            onClick={() => onRead?.(notification)}
+            onClick={() => onRead?.(notification.id)}
           >
             Mark as read
           </button>

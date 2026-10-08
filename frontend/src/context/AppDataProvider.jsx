@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useAuth } from './AuthProvider'
 import {
   fetchApplications,
   fetchDocuments,
   fetchNotifications,
   fetchProcesses,
+  isNotification,
   readAllNotifications,
   readNotification,
   removeDocumentRecord,
@@ -85,11 +86,36 @@ function safeAccountError(error, operation) {
 export function AppDataProvider({ children }) {
   const [state, dispatch] = useReducer(appDataReducer, INITIAL_STATE)
   const [hydrationRetry, setHydrationRetry] = useState(0)
+  const [notificationRetry, setNotificationRetry] = useState(0)
   const { status: authStatus, user, updateUser, signOut } = useAuth()
   const hydrationRef = useRef({ sessionId: null, promise: null })
   const sessionId = user?.id ?? user?.email ?? null
-  const authSessionRef = useRef({ authStatus, sessionId })
-  authSessionRef.current = { authStatus, sessionId }
+  const authSessionRef = useRef({ authStatus, sessionId, generation: 0 })
+  const notificationVersionRef = useRef(state.notificationVersion)
+
+  useLayoutEffect(() => {
+    if (
+      authSessionRef.current.authStatus !== authStatus
+      || authSessionRef.current.sessionId !== sessionId
+    ) {
+      authSessionRef.current = {
+        authStatus,
+        sessionId,
+        generation: authSessionRef.current.generation + 1,
+      }
+    }
+  }, [authStatus, sessionId])
+
+  useLayoutEffect(() => {
+    notificationVersionRef.current = state.notificationVersion
+  }, [state.notificationVersion])
+
+  const isCurrentSession = useCallback(
+    (generation) =>
+      authSessionRef.current.authStatus === 'authenticated'
+      && authSessionRef.current.generation === generation,
+    [],
+  )
 
   useEffect(() => {
     if (authStatus === 'unauthenticated') {
@@ -113,13 +139,11 @@ export function AppDataProvider({ children }) {
         fetchProcesses(),
         fetchApplications(),
         fetchDocuments(),
-        fetchNotifications(),
       ])
-        .then(([processes, applications, documents, notifications]) => ({
+        .then(([processes, applications, documents]) => ({
           processes,
           applications,
           documents,
-          notifications,
           profile: normalizeProfile(user),
         }))
         .catch((error) => {
@@ -149,6 +173,39 @@ export function AppDataProvider({ children }) {
     }
   }, [authStatus, hydrationRetry, sessionId, user])
 
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return undefined
+
+    let isActive = true
+    const requestSessionGeneration = authSessionRef.current.generation
+    const notificationVersion = notificationVersionRef.current
+    dispatch({ type: ACTIONS.NOTIFICATIONS_LOADING })
+    fetchNotifications()
+      .then((notifications) => {
+        if (isActive && isCurrentSession(requestSessionGeneration)) {
+          dispatch({
+            type: ACTIONS.NOTIFICATIONS_LOADED,
+            payload: { notifications, notificationVersion },
+          })
+        }
+      })
+      .catch((error) => {
+        if (!isActive || !isCurrentSession(requestSessionGeneration)) return
+        if (error?.status === 401) {
+          signOut()
+          return
+        }
+        dispatch({
+          type: ACTIONS.NOTIFICATIONS_FAILED,
+          payload: 'We could not load notifications. Please try again.',
+        })
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [authStatus, isCurrentSession, notificationRetry, sessionId, signOut])
+
   const retryHydration = useCallback(() => {
     if (
       authStatus === 'authenticated'
@@ -158,6 +215,12 @@ export function AppDataProvider({ children }) {
       setHydrationRetry((retry) => retry + 1)
     }
   }, [authStatus, sessionId])
+
+  const retryNotifications = useCallback(() => {
+    if (authSessionRef.current.authStatus === 'authenticated') {
+      setNotificationRetry((retry) => retry + 1)
+    }
+  }, [])
 
   const applicationViews = useMemo(
     () => state.applications.map((application) => buildApplicationView(application, state.documents)),
@@ -206,6 +269,7 @@ export function AppDataProvider({ children }) {
   }, [state.toast])
 
   const setRequirementStatus = useCallback(async (applicationId, requirementKey, status) => {
+    const requestSessionGeneration = authSessionRef.current.generation
     const application = state.applications.find((entry) => entry.id === applicationId)
     if (!application) {
       throw new Error('Application not found.')
@@ -229,9 +293,13 @@ export function AppDataProvider({ children }) {
       const errorMessage = error instanceof Error
         ? error.message
         : 'We could not update the checklist.'
-      showToast(errorMessage, 'warning')
+      if (isCurrentSession(requestSessionGeneration)) {
+        showToast(errorMessage, 'warning')
+      }
       throw error
     }
+    if (!isCurrentSession(requestSessionGeneration)) return
+
     const savedRequirement = result?.requirement
       ?? result?.application?.requirements?.find((entry) => entry.key === requirementKey)
     const patch = {
@@ -248,7 +316,10 @@ export function AppDataProvider({ children }) {
       type: ACTIONS.REQUIREMENT_UPDATED,
       payload: { applicationId, requirementKey, patch },
     })
-  }, [state.applications, showToast])
+    if (isNotification(result?.notification)) {
+      dispatch({ type: ACTIONS.NOTIFICATION_UPSERTED, payload: result.notification })
+    }
+  }, [isCurrentSession, state.applications, showToast])
 
   const toggleRequirement = useCallback(
     (applicationId, requirementKey, currentStatus) => {
@@ -283,6 +354,7 @@ export function AppDataProvider({ children }) {
 
   const submitUpload = useCallback(
     async (values) => {
+      const requestSessionGeneration = authSessionRef.current.generation
       dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: true } })
       let document = null
 
@@ -295,6 +367,7 @@ export function AppDataProvider({ children }) {
           expiryDate: values.expiryDate,
           note: values.note,
         })
+        if (!isCurrentSession(requestSessionGeneration)) return document
 
         dispatch({ type: ACTIONS.DOCUMENT_ADDED, payload: document })
         dispatch({ type: ACTIONS.UPLOAD_CLOSED })
@@ -317,6 +390,8 @@ export function AppDataProvider({ children }) {
               status: 'completed',
               documentId: document.id,
             })
+            if (!isCurrentSession(requestSessionGeneration)) return document
+
             const savedRequirement = result?.requirement
               ?? result?.application?.requirements?.find((entry) => entry.key === requirement.key)
 
@@ -336,6 +411,9 @@ export function AppDataProvider({ children }) {
                 },
               },
             })
+            if (isNotification(result?.notification)) {
+              dispatch({ type: ACTIONS.NOTIFICATION_UPSERTED, payload: result.notification })
+            }
           }
         }
 
@@ -361,13 +439,17 @@ export function AppDataProvider({ children }) {
         const message = document
           ? `${document.name} was uploaded, but its checklist link could not be saved. ${errorMessage}`
           : errorMessage
-        showToast(message, 'warning')
+        if (isCurrentSession(requestSessionGeneration)) {
+          showToast(message, 'warning')
+        }
         throw error
       } finally {
-        dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: false } })
+        if (isCurrentSession(requestSessionGeneration)) {
+          dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: false } })
+        }
       }
     },
-    [state.applications, showToast],
+    [isCurrentSession, state.applications, showToast],
   )
 
   const replaceDocument = useCallback(async (documentId, file) => {
@@ -455,14 +537,42 @@ export function AppDataProvider({ children }) {
   )
 
   const markNotificationRead = useCallback(async (notificationId) => {
-    dispatch({ type: ACTIONS.NOTIFICATION_READ, payload: notificationId })
-    await readNotification(notificationId)
-  }, [])
+    const requestSessionGeneration = authSessionRef.current.generation
+    try {
+      const notification = await readNotification(notificationId)
+      if (!isCurrentSession(requestSessionGeneration)) return
+      dispatch({ type: ACTIONS.NOTIFICATION_UPSERTED, payload: notification })
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return
+      if (error?.status === 401) {
+        signOut()
+        return
+      }
+      showToast('We could not mark this notification as read. Please try again.', 'warning')
+    }
+  }, [isCurrentSession, showToast, signOut])
 
   const markAllNotificationsRead = useCallback(async () => {
-    dispatch({ type: ACTIONS.NOTIFICATIONS_READ_ALL })
-    await readAllNotifications()
-  }, [])
+    const requestSessionGeneration = authSessionRef.current.generation
+    const notificationIds = state.notifications.map((notification) => notification.id)
+    try {
+      const updatedCount = await readAllNotifications()
+      if (!isCurrentSession(requestSessionGeneration)) return
+      dispatch({
+        type: ACTIONS.NOTIFICATIONS_READ_ALL,
+        payload: notificationIds,
+      })
+      setNotificationRetry((retry) => retry + 1)
+      return updatedCount
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return
+      if (error?.status === 401) {
+        signOut()
+        return
+      }
+      showToast('We could not mark all notifications as read. Please try again.', 'warning')
+    }
+  }, [isCurrentSession, showToast, signOut, state.notifications])
 
   const updateProfile = useCallback(
     async (values) => {
@@ -580,9 +690,13 @@ export function AppDataProvider({ children }) {
       isLoading: state.status === 'loading',
       error: state.error,
       retryHydration,
+      retryNotifications,
       applicationViews,
       documentViews,
       notificationViews,
+      notificationsStatus: state.notificationsStatus,
+      notificationsError: state.notificationsError,
+      notificationsRefreshing: state.notificationsRefreshing,
       stats,
       getApplicationById: (id) =>
         applicationViews.find((application) => application.id === id) ?? null,
@@ -618,6 +732,7 @@ export function AppDataProvider({ children }) {
       applicationViews,
       documentViews,
       notificationViews,
+      retryNotifications,
       stats,
       setRequirementStatus,
       toggleRequirement,

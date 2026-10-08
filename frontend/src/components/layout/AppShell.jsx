@@ -22,7 +22,7 @@ const SECTION_TITLES = {
 export function AppShell({ children, className, headerActions }) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)
   const { path, navigate } = useActiveRoute()
-  const { stats } = useAppData()
+  const { stats, notificationsStatus } = useAppData()
   const { user } = useAuth()
   const authenticatedUser = { ...user, role: user.role ?? 'Personal account' }
 
@@ -56,7 +56,9 @@ export function AppShell({ children, className, headerActions }) {
           title={title}
           user={authenticatedUser}
           actions={headerActions}
-          unreadCount={stats?.unreadNotifications ?? 0}
+          unreadCount={
+            notificationsStatus === 'ready' ? stats?.unreadNotifications ?? 0 : null
+          }
           onOpenReminders={() => navigate(ROUTES.reminders)}
           onOpenProfile={() => navigate(ROUTES.profile)}
         />

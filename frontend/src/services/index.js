@@ -24,5 +24,10 @@ export {
   updateDocumentRecord,
   removeDocumentRecord,
 } from './documentService'
-export { fetchNotifications, readNotification, readAllNotifications } from './notificationService'
+export {
+  fetchNotifications,
+  isNotification,
+  readNotification,
+  readAllNotifications,
+} from './notificationService'
 export { saveProfile, savePassword, savePreferences } from './profileService'

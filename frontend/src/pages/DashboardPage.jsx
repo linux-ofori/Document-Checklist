@@ -35,7 +35,16 @@ function SectionHead({ title, description, actionLabel, onAction }) {
 
 export function DashboardPage() {
   const { navigate } = useActiveRoute()
-  const { profile, stats, recentApplications, recentDocuments, isLoading } = useAppData()
+  const {
+    profile,
+    stats,
+    recentApplications,
+    recentDocuments,
+    isLoading,
+    notificationsStatus,
+    notificationsError,
+    retryNotifications,
+  } = useAppData()
 
   const firstName = String(profile?.name ?? '').split(' ')[0] || 'there'
 
@@ -74,7 +83,11 @@ export function DashboardPage() {
                       stats.activeApplications,
                       'application',
                     )}.`
-                  : 'Everything is up to date. Nothing is missing and nothing is expiring soon.'}
+                  : notificationsStatus === 'loading'
+                    ? 'Your checklists are up to date. Loading reminders.'
+                    : notificationsError
+                      ? 'Your checklists are up to date, but reminders could not be refreshed.'
+                      : 'Everything is up to date. Nothing is missing and nothing is expiring soon.'}
             </p>
           </div>
         </header>
@@ -82,43 +95,69 @@ export function DashboardPage() {
         {isLoading ? (
           <LoadingState variant="skeleton" lines={4} label="Loading your dashboard" />
         ) : (
-          <div className="stat-grid">
-            <StatCard
-              label="Active applications"
-              value={stats.activeApplications}
-              hint={`${stats.completedApplications} completed`}
-              icon={<FileStack size={18} />}
-              tone="primary"
-              onClick={() => navigate(ROUTES.applications)}
-            />
+          <>
+            {notificationsError ? (
+              <Alert
+                tone={notificationsStatus === 'ready' ? 'warning' : 'danger'}
+                title={
+                  notificationsStatus === 'ready'
+                    ? 'Reminders could not be refreshed'
+                    : 'Reminders unavailable'
+                }
+                description={
+                  notificationsStatus === 'ready'
+                    ? 'Your last loaded reminder count is shown below.'
+                    : 'Your application and document data loaded, but reminders are unavailable.'
+                }
+                action={
+                  <Button variant="outline" size="sm" onClick={retryNotifications}>
+                    Retry
+                  </Button>
+                }
+              />
+            ) : null}
+            <div className="stat-grid">
+              <StatCard
+                label="Active applications"
+                value={stats.activeApplications}
+                hint={`${stats.completedApplications} completed`}
+                icon={<FileStack size={18} />}
+                tone="primary"
+                onClick={() => navigate(ROUTES.applications)}
+              />
 
-            <StatCard
-              label="Documents collected"
-              value={stats.completedDocuments}
-              hint="Reused across every application"
-              icon={<CircleCheck size={18} />}
-              tone="success"
-              onClick={() => navigate(ROUTES.documents)}
-            />
+              <StatCard
+                label="Documents collected"
+                value={stats.completedDocuments}
+                hint="Reused across every application"
+                icon={<CircleCheck size={18} />}
+                tone="success"
+                onClick={() => navigate(ROUTES.documents)}
+              />
 
-            <StatCard
-              label="Still to do"
-              value={stats.pendingDocuments}
-              hint={`${stats.missingDocuments} missing, ${stats.inProgressDocuments} in progress`}
-              icon={<CircleDashed size={18} />}
-              tone="warning"
-              onClick={() => navigate(ROUTES.applications)}
-            />
+              <StatCard
+                label="Still to do"
+                value={stats.pendingDocuments}
+                hint={`${stats.missingDocuments} missing, ${stats.inProgressDocuments} in progress`}
+                icon={<CircleDashed size={18} />}
+                tone="warning"
+                onClick={() => navigate(ROUTES.applications)}
+              />
 
-            <StatCard
-              label="Open reminders"
-              value={stats.reminders}
-              hint={stats.reminders > 0 ? 'Need attention this week' : 'You are all caught up'}
-              icon={<Bell size={18} />}
-              tone={stats.reminders > 0 ? 'danger' : 'neutral'}
-              onClick={() => navigate(ROUTES.reminders)}
-            />
-          </div>
+              <StatCard
+                label="Open reminders"
+                value={notificationsStatus === 'ready' ? stats.reminders : '—'}
+                hint={
+                  notificationsStatus === 'ready'
+                    ? stats.reminders > 0 ? 'Need attention this week' : 'You are all caught up'
+                    : 'Reminder count unavailable'
+                }
+                icon={<Bell size={18} />}
+                tone={stats.reminders > 0 ? 'danger' : 'neutral'}
+                onClick={() => navigate(ROUTES.reminders)}
+              />
+            </div>
+          </>
         )}
 
         <Card

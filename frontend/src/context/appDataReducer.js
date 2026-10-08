@@ -13,7 +13,10 @@ export const ACTIONS = {
   DOCUMENT_ADDED: 'DOCUMENT_ADDED',
   DOCUMENT_PATCHED: 'DOCUMENT_PATCHED',
   DOCUMENT_REMOVED: 'DOCUMENT_REMOVED',
-  NOTIFICATION_READ: 'NOTIFICATION_READ',
+  NOTIFICATIONS_LOADING: 'NOTIFICATIONS_LOADING',
+  NOTIFICATIONS_LOADED: 'NOTIFICATIONS_LOADED',
+  NOTIFICATIONS_FAILED: 'NOTIFICATIONS_FAILED',
+  NOTIFICATION_UPSERTED: 'NOTIFICATION_UPSERTED',
   NOTIFICATIONS_READ_ALL: 'NOTIFICATIONS_READ_ALL',
   PROFILE_PATCHED: 'PROFILE_PATCHED',
   UPLOAD_OPENED: 'UPLOAD_OPENED',
@@ -36,6 +39,11 @@ export const INITIAL_STATE = {
   applications: [],
   documents: [],
   notifications: [],
+  notificationsStatus: 'loading',
+  notificationsError: null,
+  notificationsRefreshing: false,
+  notificationVersion: 0,
+  notificationMutationVersions: {},
   profile: null,
   upload: { isOpen: false, prefill: null, isSubmitting: false },
   assistant: { isOpen: false, isThinking: false, messages: [] },
@@ -82,13 +90,55 @@ export function appDataReducer(state, action) {
         processes: action.payload.processes,
         applications: action.payload.applications,
         documents: action.payload.documents,
-        notifications: action.payload.notifications,
         profile: action.payload.profile,
         assistant: { ...state.assistant, messages: [WELCOME_MESSAGE] },
       }
 
     case ACTIONS.HYDRATE_FAILED:
       return { ...state, status: 'error', error: action.payload }
+
+    case ACTIONS.NOTIFICATIONS_LOADING:
+      return {
+        ...state,
+        notificationsStatus: state.notificationsStatus === 'ready' ? 'ready' : 'loading',
+        notificationsError: null,
+        notificationsRefreshing: state.notificationsStatus === 'ready',
+      }
+
+    case ACTIONS.NOTIFICATIONS_LOADED:
+      {
+        const locallyChanged = state.notifications.filter(
+          (notification) =>
+            (state.notificationMutationVersions[notification.id] ?? 0)
+            > action.payload.notificationVersion,
+        )
+        const changedById = new Map(
+          locallyChanged.map((notification) => [notification.id, notification]),
+        )
+        const serverIds = new Set(action.payload.notifications.map((notification) => notification.id))
+        const notifications = action.payload.notifications.map(
+          (notification) => changedById.get(notification.id) ?? notification,
+        )
+        locallyChanged.forEach((notification) => {
+          if (!serverIds.has(notification.id)) notifications.push(notification)
+        })
+
+        return {
+          ...state,
+          notifications,
+          notificationsStatus: 'ready',
+          notificationsError: null,
+          notificationsRefreshing: false,
+        }
+      }
+
+    case ACTIONS.NOTIFICATIONS_FAILED:
+      return {
+        ...state,
+        notificationsStatus: state.notificationsStatus === 'ready' ? 'ready' : 'error',
+        notificationsError: action.payload,
+        notificationsRefreshing: false,
+      }
 
     case ACTIONS.AUTH_RESET:
       return {
@@ -133,19 +183,50 @@ export function appDataReducer(state, action) {
         documents: state.documents.filter((document) => document.id !== action.payload),
       }
 
-    case ACTIONS.NOTIFICATION_READ:
+    case ACTIONS.NOTIFICATION_UPSERTED: {
+      const existingIndex = state.notifications.findIndex(
+        (notification) => notification.id === action.payload.id,
+      )
+      const notifications = [...state.notifications]
+      if (existingIndex === -1) {
+        notifications.push(action.payload)
+      } else {
+        notifications[existingIndex] = action.payload
+      }
+      const notificationVersion = state.notificationVersion + 1
       return {
         ...state,
-        notifications: state.notifications.map((notification) =>
-          notification.id === action.payload ? { ...notification, isRead: true } : notification,
-        ),
+        notifications,
+        notificationVersion,
+        notificationMutationVersions: {
+          ...state.notificationMutationVersions,
+          [action.payload.id]: notificationVersion,
+        },
       }
+    }
 
-    case ACTIONS.NOTIFICATIONS_READ_ALL:
+    case ACTIONS.NOTIFICATIONS_READ_ALL: {
+      const notificationVersion = state.notificationVersion + 1
+      const changedIds = []
+      const readIds = new Set(action.payload)
+      const notifications = state.notifications.map((notification) => {
+        if (!notification.isRead && readIds.has(notification.id)) {
+          changedIds.push(notification.id)
+          return { ...notification, isRead: true }
+        }
+        return notification
+      })
+      const notificationMutationVersions = { ...state.notificationMutationVersions }
+      changedIds.forEach((id) => {
+        notificationMutationVersions[id] = notificationVersion
+      })
       return {
         ...state,
-        notifications: state.notifications.map((notification) => ({ ...notification, isRead: true })),
+        notifications,
+        notificationVersion: changedIds.length > 0 ? notificationVersion : state.notificationVersion,
+        notificationMutationVersions,
       }
+    }
 
     case ACTIONS.PROFILE_PATCHED:
       return {

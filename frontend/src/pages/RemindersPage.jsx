@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Bell, BellOff, CheckCheck, Sparkles } from 'lucide-react'
 import { AppLayout } from '../layouts/AppLayout'
 import { NotificationCard, StatCard } from '../components/product'
-import { Alert, Button, Card, EmptyState, TabGroup } from '../components/ui'
+import { Alert, Button, Card, EmptyState, LoadingState, TabGroup } from '../components/ui'
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { NOTIFICATION_KIND_LABELS } from '../data'
@@ -19,8 +19,19 @@ function sortByDueDate(items) {
 
 export function RemindersPage() {
   const { navigate } = useActiveRoute()
-  const { notificationViews, markNotificationRead, markAllNotificationsRead, openAssistant } =
-    useAppData()
+  const {
+    notificationViews,
+    notificationsStatus,
+    notificationsError,
+    notificationsRefreshing,
+    retryNotifications,
+    markNotificationRead,
+    markAllNotificationsRead,
+    openAssistant,
+    getDocumentById,
+    openDocumentPreview,
+  } = useAppData()
+  const hasNotifications = notificationsStatus === 'ready'
 
   const counts = useMemo(
     () => ({
@@ -59,6 +70,18 @@ export function RemindersPage() {
             onOpenApplication={(entry) =>
               navigate(toRoutePath('application', { id: entry.applicationId }))
             }
+            onOpenDocument={
+              getDocumentById(notification.documentId)
+                ? (entry) => {
+                    const document = getDocumentById(entry.documentId)
+                    if (document) {
+                      openDocumentPreview(document.id)
+                    } else if (entry.applicationId) {
+                      navigate(toRoutePath('application', { id: entry.applicationId }))
+                    }
+                  }
+                : undefined
+            }
           />
         ))}
       </ul>
@@ -85,7 +108,7 @@ export function RemindersPage() {
             size="md"
             leadingIcon={<CheckCheck size={16} aria-hidden="true" />}
             onClick={markAllNotificationsRead}
-            disabled={counts.unread === 0}
+            disabled={!hasNotifications || notificationsRefreshing || counts.unread === 0}
           >
             Mark all as read
           </Button>
@@ -100,111 +123,148 @@ export function RemindersPage() {
           </p>
         </header>
 
-        <div className="stat-grid">
-          <StatCard
-            label="Needs attention"
-            value={counts.unread}
-            hint={`${pluralize(counts.total, 'reminder')} in total`}
-            icon={<Bell size={18} />}
-            tone={counts.unread > 0 ? 'danger' : 'neutral'}
-          />
-          <StatCard
-            label="Overdue"
-            value={counts.overdue}
-            hint="Already past the due date"
-            icon={<Bell size={18} />}
-            tone={counts.overdue > 0 ? 'warning' : 'neutral'}
-          />
-          <StatCard
-            label="Expiry reminders"
-            value={counts.expiry}
-            hint="Documents with a date on them"
-            icon={<Bell size={18} />}
-            tone="secondary"
-          />
-        </div>
-
-        {counts.unread === 0 ? (
+        {notificationsStatus === 'loading' ? (
+          <LoadingState label="Loading your notifications" />
+        ) : notificationsStatus === 'error' ? (
           <Alert
-            tone="success"
-            icon={<CheckCheck size={18} aria-hidden="true" />}
-            title="You are all caught up"
-            description="Every reminder has been read. Add expiry dates to your documents and we will keep watching them for you."
-          />
-        ) : (
-          <Alert
-            tone="info"
-            icon={<Bell size={18} aria-hidden="true" />}
-            title={`${pluralize(counts.unread, 'reminder')} waiting for you`}
-            description="We check document expiry dates every morning, so anything new shows up here the day it becomes a problem."
+            tone="danger"
+            title="Notifications could not be loaded"
+            description={notificationsError}
             action={
-              <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.documents)}>
-                Open library
+              <Button variant="outline" size="sm" onClick={retryNotifications}>
+                Retry
               </Button>
             }
           />
-        )}
+        ) : (
+          <>
+            {notificationsError ? (
+              <Alert
+                tone="warning"
+                title="Could not refresh notifications"
+                description="Showing the last notifications we loaded. Try again to check for updates."
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={retryNotifications}
+                    disabled={notificationsRefreshing}
+                  >
+                    {notificationsRefreshing ? 'Refreshing' : 'Retry'}
+                  </Button>
+                }
+              />
+            ) : notificationsRefreshing ? (
+              <LoadingState label="Refreshing your notifications" size="sm" />
+            ) : null}
 
-        <TabGroup
-          label="Reminder filters"
-          tabs={[
-            {
-              id: 'open',
-              label: 'Needs attention',
-              count: counts.unread,
-              render: () =>
-                renderList(
-                  unread,
-                  'Nothing needs attention',
-                  'Every reminder has been read. We will tell you the moment something changes.',
-                ),
-            },
-            {
-              id: 'expiry',
-              label: NOTIFICATION_KIND_LABELS.expiry,
-              count: counts.expiry,
-              render: () =>
-                renderList(
-                  byKind('expiry'),
-                  'No expiry reminders',
-                  'Add an expiry date to a document and we will start warning you before it runs out.',
-                ),
-            },
-            {
-              id: 'missing-document',
-              label: NOTIFICATION_KIND_LABELS['missing-document'],
-              count: counts.missing,
-              render: () =>
-                renderList(
-                  byKind('missing-document'),
-                  'Nothing is missing',
-                  'All required documents are attached to the checklists you are working on.',
-                ),
-            },
-            {
-              id: 'application',
-              label: NOTIFICATION_KIND_LABELS.application,
-              count: counts.application,
-              render: () =>
-                renderList(
-                  byKind('application'),
-                  'No application reminders',
-                  'Deadlines and appointment dates will appear here once you set a due date.',
-                ),
-            },
-            {
-              id: 'all',
-              label: 'All',
-              count: counts.total,
-              render: () =>
-                renderList(
-                  notificationViews,
-                  'No reminders yet',
-                  'Reminders are created when a document is close to expiring or a checklist item is still missing.',
-                ),
-            },
-          ]}
-        />
+            <div className="stat-grid">
+              <StatCard
+                label="Needs attention"
+                value={counts.unread}
+                hint={`${pluralize(counts.total, 'reminder')} in total`}
+                icon={<Bell size={18} />}
+                tone={counts.unread > 0 ? 'danger' : 'neutral'}
+              />
+              <StatCard
+                label="Overdue"
+                value={counts.overdue}
+                hint="Already past the due date"
+                icon={<Bell size={18} />}
+                tone={counts.overdue > 0 ? 'warning' : 'neutral'}
+              />
+              <StatCard
+                label="Expiry reminders"
+                value={counts.expiry}
+                hint="Documents with a date on them"
+                icon={<Bell size={18} />}
+                tone="secondary"
+              />
+            </div>
+
+            {counts.unread === 0 ? (
+              <Alert
+                tone="success"
+                icon={<CheckCheck size={18} aria-hidden="true" />}
+                title="You are all caught up"
+                description="Every reminder has been read. Add expiry dates to your documents and we will keep watching them for you."
+              />
+            ) : (
+              <Alert
+                tone="info"
+                icon={<Bell size={18} aria-hidden="true" />}
+                title={`${pluralize(counts.unread, 'reminder')} waiting for you`}
+                description="We check document expiry dates every morning, so anything new shows up here the day it becomes a problem."
+                action={
+                  <Button variant="ghost" size="sm" onClick={() => navigate(ROUTES.documents)}>
+                    Open library
+                  </Button>
+                }
+              />
+            )}
+
+            <TabGroup
+              label="Reminder filters"
+              tabs={[
+                {
+                  id: 'open',
+                  label: 'Needs attention',
+                  count: counts.unread,
+                  render: () =>
+                    renderList(
+                      unread,
+                      'Nothing needs attention',
+                      'Every reminder has been read. We will tell you the moment something changes.',
+                    ),
+                },
+                {
+                  id: 'expiry',
+                  label: NOTIFICATION_KIND_LABELS.expiry,
+                  count: counts.expiry,
+                  render: () =>
+                    renderList(
+                      byKind('expiry'),
+                      'No expiry reminders',
+                      'Add an expiry date to a document and we will start warning you before it runs out.',
+                    ),
+                },
+                {
+                  id: 'missing-document',
+                  label: NOTIFICATION_KIND_LABELS['missing-document'],
+                  count: counts.missing,
+                  render: () =>
+                    renderList(
+                      byKind('missing-document'),
+                      'Nothing is missing',
+                      'All required documents are attached to the checklists you are working on.',
+                    ),
+                },
+                {
+                  id: 'application',
+                  label: NOTIFICATION_KIND_LABELS.application,
+                  count: counts.application,
+                  render: () =>
+                    renderList(
+                      byKind('application'),
+                      'No application reminders',
+                      'Deadlines and appointment dates will appear here once you set a due date.',
+                    ),
+                },
+                {
+                  id: 'all',
+                  label: 'All',
+                  count: counts.total,
+                  render: () =>
+                    renderList(
+                      notificationViews,
+                      'No reminders yet',
+                      'Reminders are created when a document is close to expiring or a checklist item is still missing.',
+                    ),
+                },
+              ]}
+            />
+          </>
+        )}
       </div>
     </AppLayout>
   )

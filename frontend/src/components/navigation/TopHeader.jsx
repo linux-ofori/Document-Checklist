@@ -6,7 +6,7 @@ export function TopHeader({
   title,
   user,
   actions,
-  unreadCount = 0,
+  unreadCount = null,
   onOpenReminders,
   onOpenProfile,
   className,
@@ -24,7 +24,13 @@ export function TopHeader({
 
         <span className="app-topbar__bell">
           <IconButton
-            label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+            label={
+              unreadCount === null
+                ? 'Notifications unavailable'
+                : unreadCount > 0
+                  ? `Notifications, ${unreadCount} unread`
+                  : 'Notifications'
+            }
             variant="subtle"
             size="md"
             onClick={onOpenReminders}
