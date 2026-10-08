@@ -26,6 +26,11 @@ export function isValidEmail(value) {
   return EMAIL_PATTERN.test(String(value ?? '').trim())
 }
 
+function hasValidOptionalPhone(value) {
+  const phone = String(value ?? '').trim()
+  return !phone || /^[+()\-\s\d]{7,20}$/.test(phone)
+}
+
 export function passwordStrength(value) {
   const password = String(value ?? '')
   const metRules = PASSWORD_RULES.filter((rule) => rule.test(password)).map((rule) => rule.id)
@@ -61,6 +66,10 @@ export function validateSignUpForm(values) {
     errors.name = 'Enter your full name.'
   } else if (name.length < 2) {
     errors.name = 'Enter at least 2 characters.'
+  }
+
+  if (!hasValidOptionalPhone(values.phone)) {
+    errors.phone = 'Enter a valid phone number.'
   }
 
   if (!String(values.email ?? '').trim()) {
@@ -105,8 +114,7 @@ export function validateProfileForm(values) {
     errors.email = 'Email address must be 254 characters or fewer.'
   }
 
-  const phone = String(values.phone ?? '').trim()
-  if (phone && !/^[+()\-\s\d]{7,20}$/.test(phone)) {
+  if (!hasValidOptionalPhone(values.phone)) {
     errors.phone = 'Enter a valid phone number.'
   }
 

@@ -66,6 +66,7 @@ export function SignupPage() {
     }
 
     setIsSubmitting(true)
+    const phone = String(values.phone ?? '').trim()
 
     try {
       const result = await request('auth/register', {
@@ -74,6 +75,7 @@ export function SignupPage() {
           name: values.name,
           email: values.email,
           password: values.password,
+          ...(phone ? { phone } : {}),
         },
       })
 
