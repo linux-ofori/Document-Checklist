@@ -242,7 +242,7 @@ Possible errors: `400` validation error, `401` authentication error, or a shared
 
 #### `PATCH /api/applications/:id/requirements/:key`
 
-**Authentication:** Required. Updates the application-specific state for a requirement key in that application's static process template. `status` is required and must be `completed`, `in-progress`, or `missing`. Optional `documentId` must refer to a document owned by the authenticated user, linked to this same application, and with a `documentType` matching the selected requirement template's `type`; send `null` to clear it. Invalid document relationships are rejected with a `400` validation error. A linked document's `documentType` or `applicationId` cannot be changed to a value that would invalidate any requirement link. `completedAt` is server-controlled and cannot be supplied by the client. Setting status to `completed` assigns a UTC timestamp if the requirement was not already completed; setting it to `missing` or `in-progress` clears that timestamp.
+**Authentication:** Required. Updates the application-specific state for a requirement key in that application's static process template. `status` is required and must be `completed`, `in-progress`, or `missing`. Optional `documentId` must refer to a document owned by the authenticated user, associated with this application, and with a `documentType` matching the selected requirement template's `type`; send `null` to clear it. Linking or relinking a requirement to a document pending deletion is rejected with `409`; explicitly unlinking it by sending `documentId: null` is allowed. Other invalid document relationships are rejected with a `400` validation error. A linked document's `documentType` or `applicationId` cannot be changed to a value that would invalidate any requirement link. `completedAt` is server-controlled and cannot be supplied by the client. Setting status to `completed` assigns a UTC timestamp if the requirement was not already completed; setting it to `missing` or `in-progress` clears that timestamp.
 
 ```json
 {
@@ -251,7 +251,7 @@ Possible errors: `400` validation error, `401` authentication error, or a shared
 }
 ```
 
-**Success:** `200 OK`, `{ "application": { ... } }` with the updated application. Possible errors: `400` validation error or a document linked to another application, `401` authentication error, `404` missing/non-owned application, unknown requirement key, or missing/non-owned document, or a shared server error below.
+**Success:** `200 OK`, `{ "application": { ... } }` with the updated application. When a completion notification is persisted for a transition to `completed`, the response also includes `"notification": { ... }`; otherwise that property is omitted. Possible errors: `400` validation error or a document linked to another application, `401` authentication error, `404` missing/non-owned application, unknown requirement key, or missing/non-owned document, or a shared server error below.
 
 There is no application delete, general application update, submission, or reviewer workflow endpoint.
 
@@ -300,7 +300,7 @@ When an application requirement transitions from `missing` or `in-progress` to `
 
 ### Document endpoints
 
-For non-null `applicationId`, the referenced application must exist and belong to the authenticated user; missing and non-owned applications both return `404 Application not found.` `applicationId: null` remains allowed. Document creation, updates, reads, and deletion remain owner-scoped. The `completed` and `status` fields remain independent; application requirement status does not change either document field.
+When document creation or a legacy `applicationId` update names an application, it must exist and belong to the authenticated user; missing and non-owned applications both return `404 Application not found.` `applicationId: null` remains allowed. Documents can be associated with multiple owned applications; `applicationIds` is canonical, while `applicationId` remains the legacy primary association. Document creation, updates, reads, and deletion remain owner-scoped. The `completed` and `status` fields remain independent; application requirement status does not change either document field.
 
 All document endpoints require a Bearer token. Documents are stored separately in `data/documents.db` and are scoped to the authenticated user. A user cannot access another user's documents; attempts to get, update, or delete one return `404` with `Document not found.`
 
@@ -337,6 +337,7 @@ File bytes are stored in private local storage under `data/uploads/` by default;
 		"documentType": "identity-card",
 		"status": "in-review",
 		"applicationId": "app-passport-2026",
+		"applicationIds": ["app-passport-2026"],
 		"fileName": null,
 		"fileSizeKb": null,
 		"uploadedAt": null,
@@ -348,9 +349,9 @@ File bytes are stored in private local storage under `data/uploads/` by default;
 }
 ```
 
-Missing optional metadata is returned as `null`. For JSON-only documents, file metadata remains `null`; multipart uploads populate it from the validated file. These values, file size in bytes, storage keys/paths, IDs, owner fields, and timestamps are rejected if supplied in request metadata.
+Missing optional metadata is returned as `null`. `applicationIds` is the canonical list of associated applications; the legacy `applicationId` field remains the primary association for existing clients. Clients cannot set `applicationIds` directly; use the association endpoints below. For JSON-only documents, file metadata remains `null`; multipart uploads populate it from the validated file. File size in bytes, storage keys/paths, IDs, owner fields, and timestamps are rejected if supplied in request metadata.
 
-`GET /api/documents` returns `{ "documents": [...] }` and `GET /api/documents/:id` returns `{ "document": { ... } }`, using this same complete public document representation. List results contain only the authenticated user's documents and are ordered newest first. `PUT /api/documents/:id` accepts partial updates to `name`, `completed`, `documentType`, `status`, `applicationId`, `expiresAt`, and `note`; at least one recognized field is required. Setting either `completed` or `status` does not alter the other. Nullable metadata can be cleared with `null`.
+`GET /api/documents` returns `{ "documents": [...] }` and `GET /api/documents/:id` returns `{ "document": { ... } }`, using this same complete public document representation. List results contain only the authenticated user's documents, omit documents with deletion pending, and are ordered newest first. `PUT /api/documents/:id` accepts partial updates to `name`, `completed`, `documentType`, `status`, `applicationId`, `expiresAt`, and `note`; at least one recognized field is required. A legacy `applicationId` update changes or clears only the current primary association and preserves other associations. It is rejected if the change would invalidate an existing checklist requirement link. Setting either `completed` or `status` does not alter the other. Nullable metadata can be cleared with `null`.
 
 Possible errors: `400` validation error or invalid document ID, `401` authentication error, `404` missing or non-owned document, or a shared request/server error below. `DELETE /api/documents/:id` returns `200 { "message": "Document deleted successfully." }` when an owned document is deleted.
 
@@ -370,6 +371,7 @@ Possible errors: `400` validation error or invalid document ID, `401` authentica
 			"documentType": "identity-card",
 			"status": "in-review",
 			"applicationId": "app-passport-2026",
+			"applicationIds": ["app-passport-2026"],
 			"fileName": null,
 			"fileSizeKb": null,
 			"uploadedAt": null,
@@ -395,6 +397,22 @@ Possible errors: `401` authentication error or a shared server error below.
 **Authentication:** Required. Retrieves the stored file for a document owned by the authenticated user. The `id` path parameter must be exactly 16 alphanumeric characters. No request body.
 
 **Success:** `200 OK` with the file bytes, a PDF/JPEG/PNG `Content-Type`, and `Content-Disposition: inline` using the stored display filename. The internal storage key and filesystem path are not returned. Metadata-only documents and documents whose physical file is missing return `404 Document file not found.` A non-owned document is also reported as not found.
+
+#### `POST /api/documents/:id/applications`
+
+**Authentication:** Required. Associates an owned document with an application owned by the authenticated user. The document ID must be exactly 16 alphanumeric characters.
+
+```json
+{ "applicationId": "app-passport-2026" }
+```
+
+**Success:** `200 OK`, returning `{ "document": { ... } }` with the updated public document. Repeating an existing association is idempotent and does not create duplicate links. Invalid IDs return `400`; missing or non-owned documents/applications return `404`; a document with permanent deletion pending returns `409`.
+
+#### `DELETE /api/documents/:id/applications/:applicationId`
+
+**Authentication:** Required. Detaches an owned document from one application owned by the authenticated user. This does not delete the document record or stored file. If a checklist requirement in that application still references the document, the request returns `409` and leaves the association intact. Repeating a successful detach is idempotent.
+
+**Success:** `200 OK`, returning `{ "document": { ... } }` with the updated public document. Invalid IDs return `400`; missing or non-owned documents/applications return `404`; a requirement-linked or deletion-pending document returns `409`.
 
 #### `PUT /api/documents/:id`
 
@@ -424,7 +442,9 @@ Provide at least one editable field: `name`, `completed`, `documentType`, `statu
 { "message": "Document deleted successfully." }
 ```
 
-Possible errors: `400` invalid document ID, `401` authentication error, `404` document not found, or a shared server error below.
+Permanent deletion marks the document as pending, clears matching application requirement references, removes the stored file, then removes the document record. If the pending marker is persisted but a later cleanup step fails, the endpoint returns the shared `500` response and startup recovery retries the pending cleanup; retrying this `DELETE` endpoint also attempts to resume it. Pending documents are hidden from normal document reads. Association changes, metadata updates, and file replacement are rejected with `409` while deletion is pending; linking or relinking a requirement to the pending document is also rejected, but explicitly unlinking a requirement remains allowed. This endpoint permanently deletes the document and its file; use the association `DELETE` endpoint to detach it from only one application.
+
+Possible errors: `400` invalid document ID, `401` authentication error, `404` document not found, or a shared server error below. `409` applies to operations blocked because deletion is pending, not necessarily to a repeated permanent-deletion request.
 
 ### Error responses
 
@@ -442,7 +462,7 @@ Errors are JSON. Most use `{ "error": "message" }`; validation errors also inclu
 | `400` | Invalid fields: `{ "error": "Validation failed.", "details": ["..."] }`. Malformed JSON: `{ "error": "Request body must contain valid JSON." }`. Invalid document ID: `{ "error": "Invalid document ID." }`. |
 | `401` | Missing token: `{ "error": "A Bearer token is required." }`. Invalid or expired token: `{ "error": "The token is invalid or expired." }`. |
 | `404` | Unknown API route or unsupported method: `{ "error": "Route not found." }`. Missing or non-owned document: `{ "error": "Document not found." }`. Missing file content: `{ "error": "Document file not found." }`. |
-| `409` | Duplicate account email: `{ "error": "An account with that email already exists." }`. |
+| `409` | Duplicate account email, an operation blocked because document deletion is pending, or an attempt to detach a document still linked to a requirement. |
 | `413` | Request body exceeds the 10 KB JSON limit: `{ "error": "Request body is too large." }`. |
 | `429` | Rate limit exceeded; see rate limiting below. |
 | `500` | Unexpected server error: `{ "error": "An unexpected server error occurred." }`. |

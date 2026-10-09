@@ -80,6 +80,13 @@ function insertApplication(application) {
   });
 }
 
+function updateApplicationRecord(id, update) {
+  return new Promise((resolve, reject) => {
+    applicationsDatabase.update({ _id: id }, update, {}, (error, count) =>
+      error ? reject(error) : resolve(count));
+  });
+}
+
 test('application endpoints require authentication', async () => {
   for (const [route, options] of [
     ['/api/applications', { method: 'GET' }],
@@ -351,6 +358,144 @@ test('updates requirement state and enforces same-owner, same-application docume
     `/api/applications/${otherApplication.id}/requirements/identity-card`,
     { method: 'PATCH', token: user.token, body: { status: 'completed' } }
   )).status, 404);
+});
+
+test('persists template requirements missing from legacy application state', async () => {
+  const user = await registerUser('Incomplete Checklist Owner', 'incomplete-checklist@example.com');
+  const missingKeyApplication = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  const absentArrayApplication = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  const nonArrayRequirementsApplication = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+
+  const missingKeyDocument = await request('/api/documents', {
+    method: 'POST',
+    token: user.token,
+    body: {
+      name: 'Document for omitted checklist key',
+      applicationId: missingKeyApplication.id,
+      documentType: 'identity-card'
+    }
+  });
+  const absentArrayDocument = await request('/api/documents', {
+    method: 'POST',
+    token: user.token,
+    body: {
+      name: 'Document for absent checklist array',
+      applicationId: absentArrayApplication.id,
+      documentType: 'identity-card'
+    }
+  });
+  assert.equal(missingKeyDocument.status, 201);
+  assert.equal(absentArrayDocument.status, 201);
+
+  const storedMissingKeyApplication = await findApplicationById(missingKeyApplication.id, user.user.id);
+  await updateApplicationRecord(missingKeyApplication.id, {
+    $set: {
+      requirements: storedMissingKeyApplication.requirements
+        .filter((requirement) => requirement.key !== 'identity-card')
+    }
+  });
+
+  const completed = await request(
+    `/api/applications/${missingKeyApplication.id}/requirements/identity-card`,
+    {
+      method: 'PATCH',
+      token: user.token,
+      body: { status: 'completed', documentId: missingKeyDocument.payload.document.id }
+    }
+  );
+  assert.equal(completed.status, 200);
+  const returnedCompletedRequirement = completed.payload.application.requirements
+    .find((requirement) => requirement.key === 'identity-card');
+  assert.equal(returnedCompletedRequirement.status, 'completed');
+  assert.equal(returnedCompletedRequirement.documentId, missingKeyDocument.payload.document.id);
+  assert.ok(Number.isFinite(Date.parse(returnedCompletedRequirement.completedAt)));
+
+  const persistedCompletedApplication = await findApplicationById(missingKeyApplication.id, user.user.id);
+  const persistedCompletedRequirements = persistedCompletedApplication.requirements
+    .filter((requirement) => requirement.key === 'identity-card');
+  assert.equal(persistedCompletedRequirements.length, 1);
+  assert.deepEqual(persistedCompletedRequirements[0], {
+    key: 'identity-card',
+    status: 'completed',
+    documentId: missingKeyDocument.payload.document.id,
+    completedAt: returnedCompletedRequirement.completedAt
+  });
+
+  const repeatedCompletion = await request(
+    `/api/applications/${missingKeyApplication.id}/requirements/identity-card`,
+    {
+      method: 'PATCH',
+      token: user.token,
+      body: { status: 'completed', documentId: missingKeyDocument.payload.document.id }
+    }
+  );
+  assert.equal(Object.hasOwn(repeatedCompletion.payload, 'notification'), false);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 1);
+
+  await updateApplicationRecord(absentArrayApplication.id, { $unset: { requirements: true } });
+  const inProgress = await request(
+    `/api/applications/${absentArrayApplication.id}/requirements/identity-card`,
+    {
+      method: 'PATCH',
+      token: user.token,
+      body: { status: 'in-progress', documentId: absentArrayDocument.payload.document.id }
+    }
+  );
+  assert.equal(inProgress.status, 200);
+  const returnedInProgressRequirement = inProgress.payload.application.requirements
+    .find((requirement) => requirement.key === 'identity-card');
+  assert.equal(returnedInProgressRequirement.status, 'in-progress');
+  assert.equal(returnedInProgressRequirement.documentId, absentArrayDocument.payload.document.id);
+  assert.equal(returnedInProgressRequirement.completedAt, null);
+
+  const persistedInProgressApplication = await findApplicationById(absentArrayApplication.id, user.user.id);
+  assert.deepEqual(persistedInProgressApplication.requirements, [{
+    key: 'identity-card',
+    status: 'in-progress',
+    documentId: absentArrayDocument.payload.document.id,
+    completedAt: null
+  }]);
+
+  await updateApplicationRecord(nonArrayRequirementsApplication.id, {
+    $set: { requirements: { legacyState: true } }
+  });
+  const missing = await request(
+    `/api/applications/${nonArrayRequirementsApplication.id}/requirements/identity-card`,
+    {
+      method: 'PATCH',
+      token: user.token,
+      body: { status: 'missing' }
+    }
+  );
+  assert.equal(missing.status, 200);
+  const returnedMissingRequirement = missing.payload.application.requirements
+    .find((requirement) => requirement.key === 'identity-card');
+  assert.equal(returnedMissingRequirement.status, 'missing');
+  assert.equal(returnedMissingRequirement.documentId, null);
+  assert.equal(returnedMissingRequirement.completedAt, null);
+
+  const persistedMissingApplication = await findApplicationById(
+    nonArrayRequirementsApplication.id,
+    user.user.id
+  );
+  assert.deepEqual(persistedMissingApplication.requirements, [{
+    key: 'identity-card',
+    status: 'missing',
+    documentId: null,
+    completedAt: null
+  }]);
 });
 
 test('validates document application ownership on create and update', async () => {

@@ -2,7 +2,7 @@ const express = require('express');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
 const { findUserById } = require('../models/userModel');
-const { findDocumentById } = require('../models/documentModel');
+const { findDocumentById, getDocumentApplicationIds } = require('../models/documentModel');
 const {
   createApplication,
   findApplicationById,
@@ -199,26 +199,40 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
         return { kind: 'missing-requirement' };
       }
 
-      const current = application.requirements.find((requirement) => requirement.key === definition.key);
+      const storedRequirements = Array.isArray(application.requirements)
+        ? application.requirements
+        : [];
+      const current = storedRequirements.find((requirement) => requirement.key === definition.key);
       const previousStatus = current ? current.status : 'missing';
       const { status, documentId, hasDocumentId } = validation.input;
       let linkedDocumentId = current ? current.documentId : null;
+      let linkedDocument;
 
       if (hasDocumentId) {
         if (documentId === null) {
           linkedDocumentId = null;
         } else {
-          const document = await findDocumentById(documentId, request.user.id);
-          if (!document) {
+          linkedDocument = await findDocumentById(documentId, request.user.id);
+          if (!linkedDocument) {
             return { kind: 'missing-document' };
           }
-          if (document.applicationId !== application._id) {
+          if (linkedDocument.deleting) {
+            return { kind: 'document-deleting' };
+          }
+          if (!getDocumentApplicationIds(linkedDocument).includes(application._id)) {
             return { kind: 'document-application-mismatch' };
           }
-          if (document.documentType !== definition.type) {
+          if (linkedDocument.documentType !== definition.type) {
             return { kind: 'document-type-mismatch' };
           }
           linkedDocumentId = documentId;
+        }
+      }
+
+      if (linkedDocumentId && !linkedDocument) {
+        linkedDocument = await findDocumentById(linkedDocumentId, request.user.id);
+        if (linkedDocument && linkedDocument.deleting) {
+          return { kind: 'document-deleting' };
         }
       }
 
@@ -227,10 +241,18 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
           ? current.completedAt
           : new Date().toISOString())
         : null;
-      const requirements = application.requirements.map((requirement) =>
+      const requirements = storedRequirements.map((requirement) =>
         requirement.key === definition.key
           ? { key: requirement.key, status, documentId: linkedDocumentId, completedAt }
           : requirement);
+      if (!current) {
+        requirements.push({
+          key: definition.key,
+          status,
+          documentId: linkedDocumentId,
+          completedAt
+        });
+      }
       const updated = await updateApplicationRequirements(
         application._id,
         request.user.id,
@@ -269,6 +291,9 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
     }
     if (result.kind === 'missing-document') {
       return response.status(404).json({ error: 'Document not found.' });
+    }
+    if (result.kind === 'document-deleting') {
+      return response.status(409).json({ error: 'Document deletion is in progress.' });
     }
     if (result.kind === 'document-application-mismatch') {
       return response.status(400).json({

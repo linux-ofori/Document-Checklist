@@ -18,7 +18,11 @@ const {
   createDocument,
   deleteDocumentById,
   findDocumentById,
+  findDocumentsPendingDeletion,
   findDocumentsByOwnerId,
+  getDocumentApplicationIds,
+  getPrimaryApplicationId,
+  markDocumentDeletingById,
   toPublicDocument,
   updateDocumentFileById,
   updateDocumentById
@@ -187,6 +191,40 @@ function contentDispositionForInlineFile(fileName) {
   return `inline; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`;
 }
 
+async function completeDocumentDeletion(ownerId, documentId) {
+  let document = await findDocumentById(documentId, ownerId);
+  if (!document) {
+    return false;
+  }
+
+  if (!document.deleting) {
+    document = await markDocumentDeletingById(documentId, ownerId);
+    if (!document) {
+      document = await findDocumentById(documentId, ownerId);
+    }
+  }
+  if (!document) {
+    return false;
+  }
+  if (!document.deleting) {
+    throw new Error('Unable to mark the document for deletion.');
+  }
+
+  await clearDocumentRequirementReferences(ownerId, documentId);
+  if (document.storageKey) {
+    await removeStoredFile(document.storageKey);
+  }
+  return deleteDocumentById(documentId, ownerId);
+}
+
+async function recoverPendingDocumentDeletions() {
+  const documents = await findDocumentsPendingDeletion();
+  for (const document of documents) {
+    await withAccountOperationLock(document.ownerId, () =>
+      completeDocumentDeletion(document.ownerId, document._id));
+  }
+}
+
 async function requireOwnedDocument(request, response, next) {
   if (!hasValidDocumentId(request.params.id)) {
     return response.status(400).json({ error: 'Invalid document ID.' });
@@ -196,6 +234,9 @@ async function requireOwnedDocument(request, response, next) {
     const document = await findDocumentById(request.params.id, request.user.id);
     if (!document) {
       return response.status(404).json({ error: 'Document not found.' });
+    }
+    if (document.deleting) {
+      return response.status(409).json({ error: 'Document deletion is in progress.' });
     }
 
     return next();
@@ -334,7 +375,9 @@ router.post('/', parseMultipartDocument, async (request, response, next) => {
 router.get('/', async (request, response, next) => {
   try {
     const documents = await findDocumentsByOwnerId(request.user.id);
-    return response.json({ documents: documents.map(toPublicDocument) });
+    return response.json({
+      documents: documents.filter((document) => !document.deleting).map(toPublicDocument)
+    });
   } catch (error) {
     return next(error);
   }
@@ -347,7 +390,7 @@ router.get('/:id', async (request, response, next) => {
     }
 
     const document = await findDocumentById(request.params.id, request.user.id);
-    if (!document) {
+    if (!document || document.deleting) {
       return response.status(404).json({ error: 'Document not found.' });
     }
 
@@ -364,7 +407,7 @@ router.get('/:id/file', async (request, response, next) => {
     }
 
     const document = await findDocumentById(request.params.id, request.user.id);
-    if (!document || !document.storageKey) {
+    if (!document || document.deleting || !document.storageKey) {
       return response.status(404).json({ error: 'Document file not found.' });
     }
 
@@ -382,6 +425,148 @@ router.get('/:id/file', async (request, response, next) => {
     response.set('Content-Disposition', contentDispositionForInlineFile(document.fileName || 'document'));
     response.set('Content-Length', String(storedFile.buffer.length));
     return response.send(storedFile.buffer);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/:id/applications', async (request, response, next) => {
+  try {
+    if (!hasValidDocumentId(request.params.id)) {
+      return response.status(400).json({ error: 'Invalid document ID.' });
+    }
+    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body)
+        || Object.keys(request.body).length !== 1 || !Object.hasOwn(request.body, 'applicationId')
+        || typeof request.body.applicationId !== 'string'
+        || !applicationIdPattern.test(request.body.applicationId)) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['A valid applicationId is required.']
+      });
+    }
+
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return { kind: 'missing-owner' };
+      }
+      const document = await findDocumentById(request.params.id, request.user.id);
+      if (!document) {
+        return { kind: 'missing-document' };
+      }
+      if (document.deleting) {
+        return { kind: 'deleting' };
+      }
+      const application = await findApplicationById(request.body.applicationId, request.user.id);
+      if (!application) {
+        return { kind: 'missing-application' };
+      }
+
+      const applicationIds = getDocumentApplicationIds(document);
+      if (applicationIds.includes(application._id)) {
+        return { kind: 'unchanged', document };
+      }
+
+      applicationIds.push(application._id);
+      const updatedDocument = await updateDocumentById(request.params.id, request.user.id, {
+        applicationIds,
+        applicationId: getPrimaryApplicationId(document) || application._id
+      });
+      return updatedDocument
+        ? { kind: 'updated', document: updatedDocument }
+        : { kind: 'missing-document' };
+    });
+
+    if (result.kind === 'missing-owner') {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
+    if (result.kind === 'missing-document') {
+      return response.status(404).json({ error: 'Document not found.' });
+    }
+    if (result.kind === 'missing-application') {
+      return response.status(404).json({ error: 'Application not found.' });
+    }
+    if (result.kind === 'deleting') {
+      return response.status(409).json({ error: 'Document deletion is in progress.' });
+    }
+
+    return response.json({ document: toPublicDocument(result.document) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete('/:id/applications/:applicationId', async (request, response, next) => {
+  try {
+    if (!hasValidDocumentId(request.params.id)) {
+      return response.status(400).json({ error: 'Invalid document ID.' });
+    }
+    if (!applicationIdPattern.test(request.params.applicationId)) {
+      return response.status(400).json({ error: 'Invalid application ID.' });
+    }
+
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return { kind: 'missing-owner' };
+      }
+      const document = await findDocumentById(request.params.id, request.user.id);
+      if (!document) {
+        return { kind: 'missing-document' };
+      }
+      if (document.deleting) {
+        return { kind: 'deleting' };
+      }
+      const application = await findApplicationById(request.params.applicationId, request.user.id);
+      if (!application) {
+        return { kind: 'missing-application' };
+      }
+
+      const applicationIds = getDocumentApplicationIds(document);
+      if (!applicationIds.includes(application._id)) {
+        return { kind: 'unchanged', document };
+      }
+      const requirementReferences = await findDocumentRequirementReferences(
+        request.user.id,
+        request.params.id
+      );
+      if (requirementReferences.some((reference) => reference.applicationId === application._id)) {
+        return { kind: 'linked' };
+      }
+
+      const remainingApplicationIds = applicationIds.filter((id) => id !== application._id);
+      const currentPrimary = getPrimaryApplicationId(document);
+      const primaryApplicationId = currentPrimary === application._id
+        ? (remainingApplicationIds[0] || null)
+        : currentPrimary;
+      const updatedDocument = await updateDocumentById(request.params.id, request.user.id, {
+        applicationIds: remainingApplicationIds,
+        applicationId: primaryApplicationId
+      });
+      return updatedDocument
+        ? { kind: 'updated', document: updatedDocument }
+        : { kind: 'missing-document' };
+    });
+
+    if (result.kind === 'missing-owner') {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
+    if (result.kind === 'missing-document') {
+      return response.status(404).json({ error: 'Document not found.' });
+    }
+    if (result.kind === 'missing-application') {
+      return response.status(404).json({ error: 'Application not found.' });
+    }
+    if (result.kind === 'deleting') {
+      return response.status(409).json({ error: 'Document deletion is in progress.' });
+    }
+    if (result.kind === 'linked') {
+      return response.status(409).json({
+        error: 'Document is linked to a checklist requirement in this application.'
+      });
+    }
+
+    return response.json({ document: toPublicDocument(result.document) });
   } catch (error) {
     return next(error);
   }
@@ -408,6 +593,9 @@ router.put('/:id', async (request, response, next) => {
       if (!currentDocument) {
         return { kind: 'missing-document' };
       }
+      if (currentDocument.deleting) {
+        return { kind: 'deleting' };
+      }
 
       if (Object.hasOwn(input.updates, 'applicationId')
           || Object.hasOwn(input.updates, 'documentType')) {
@@ -415,15 +603,30 @@ router.put('/:id', async (request, response, next) => {
           request.user.id,
           request.params.id
         );
-        const applicationId = Object.hasOwn(input.updates, 'applicationId')
-          ? input.updates.applicationId
-          : currentDocument.applicationId;
+        const applicationIds = getDocumentApplicationIds(currentDocument);
+        const primaryApplicationId = getPrimaryApplicationId(currentDocument);
+        let nextApplicationIds = applicationIds;
+        if (Object.hasOwn(input.updates, 'applicationId')
+            && input.updates.applicationId !== primaryApplicationId) {
+          nextApplicationIds = applicationIds.filter((id) => id !== primaryApplicationId);
+          if (input.updates.applicationId
+              && !nextApplicationIds.includes(input.updates.applicationId)) {
+            nextApplicationIds.push(input.updates.applicationId);
+          }
+        }
         const documentType = Object.hasOwn(input.updates, 'documentType')
           ? input.updates.documentType
           : currentDocument.documentType;
         if (requirementReferences.some((reference) =>
-          reference.applicationId !== applicationId || reference.documentType !== documentType)) {
+          !nextApplicationIds.includes(reference.applicationId)
+          || reference.documentType !== documentType)) {
           return { kind: 'invalid-requirement-reference' };
+        }
+        if (Object.hasOwn(input.updates, 'applicationId')) {
+          input.updates.applicationIds = nextApplicationIds;
+          input.updates.applicationId = input.updates.applicationId
+            || nextApplicationIds[0]
+            || null;
         }
       }
 
@@ -443,6 +646,9 @@ router.put('/:id', async (request, response, next) => {
     }
     if (result.kind === 'missing-application') {
       return response.status(404).json({ error: 'Application not found.' });
+    }
+    if (result.kind === 'deleting') {
+      return response.status(409).json({ error: 'Document deletion is in progress.' });
     }
     if (result.kind === 'invalid-requirement-reference') {
       return response.status(400).json({
@@ -492,6 +698,9 @@ router.put('/:id/file', requireOwnedDocument, parseMultipartDocument, async (req
       const document = await findDocumentById(request.params.id, request.user.id);
       if (!document) {
         return { kind: 'missing-document' };
+      }
+      if (document.deleting) {
+        return { kind: 'deleting' };
       }
 
       const fileMetadata = {
@@ -543,6 +752,9 @@ router.put('/:id/file', requireOwnedDocument, parseMultipartDocument, async (req
     if (result.kind === 'missing-document') {
       return response.status(404).json({ error: 'Document not found.' });
     }
+    if (result.kind === 'deleting') {
+      return response.status(409).json({ error: 'Document deletion is in progress.' });
+    }
 
     return response.json({ document: toPublicDocument(result.document) });
   } catch (error) {
@@ -556,18 +768,8 @@ router.delete('/:id', async (request, response, next) => {
       return response.status(400).json({ error: 'Invalid document ID.' });
     }
 
-    const deleted = await withAccountOperationLock(request.user.id, async () => {
-      const document = await findDocumentById(request.params.id, request.user.id);
-      if (!document) {
-        return false;
-      }
-
-      if (document.storageKey) {
-        await removeStoredFile(document.storageKey);
-      }
-      await clearDocumentRequirementReferences(request.user.id, request.params.id);
-      return deleteDocumentById(request.params.id, request.user.id);
-    });
+    const deleted = await withAccountOperationLock(request.user.id, () =>
+      completeDocumentDeletion(request.user.id, request.params.id));
     if (!deleted) {
       return response.status(404).json({ error: 'Document not found.' });
     }
@@ -579,3 +781,4 @@ router.delete('/:id', async (request, response, next) => {
 });
 
 module.exports = router;
+module.exports.recoverPendingDocumentDeletions = recoverPendingDocumentDeletions;

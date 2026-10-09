@@ -111,14 +111,15 @@ app.use((error, request, response, next) => {
 });
 
 if (require.main === module) {
-  authRoutes.recoverPendingAccountDeletions()
+  documentRoutes.recoverPendingDocumentDeletions()
+    .then(() => authRoutes.recoverPendingAccountDeletions())
     .then(() => {
       app.listen(port, () => {
         console.log(`Document Checklist API listening on http://localhost:${port}`);
       });
     })
     .catch((error) => {
-      console.error('Unable to recover pending account deletions before startup.', error);
+      console.error('Unable to recover pending document or account deletions before startup.', error);
       process.exitCode = 1;
     });
 }

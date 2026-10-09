@@ -26,8 +26,10 @@ process.env.REGISTRATION_RATE_LIMIT_MAX = '50';
 const app = require('../src/server');
 const database = require('../src/config/database');
 const documentsDatabase = require('../src/config/documentsDatabase');
+const applicationsDatabase = require('../src/config/applicationsDatabase');
 const { uploadsDirectory } = require('../src/config/databasePaths');
 const authRoutes = require('../src/routes/authRoutes');
+const documentRoutes = require('../src/routes/documentRoutes');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
 const {
@@ -157,6 +159,7 @@ const publicDocumentFields = [
   'documentType',
   'status',
   'applicationId',
+  'applicationIds',
   'expiresAt',
   'note',
   'fileName',
@@ -583,6 +586,7 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(created.payload.document.documentType, null);
     assert.equal(created.payload.document.status, 'in-review');
     assert.equal(created.payload.document.applicationId, null);
+    assert.deepEqual(created.payload.document.applicationIds, []);
     assert.equal(created.payload.document.expiresAt, null);
     assert.equal(created.payload.document.note, null);
     assert.equal(created.payload.document.fileName, null);
@@ -886,6 +890,7 @@ test('authentication, account management, and document API', async (t) => {
       '_id',
       'id',
       'ownerId',
+      'applicationIds',
       'createdAt',
       'updatedAt',
       'fileName',
@@ -914,6 +919,7 @@ test('authentication, account management, and document API', async (t) => {
       'id',
       '_id',
       'ownerId',
+      'applicationIds',
       'createdAt',
       'updatedAt',
       'fileName',
@@ -954,6 +960,7 @@ test('authentication, account management, and document API', async (t) => {
       documentType: null,
       status: 'in-review',
       applicationId: null,
+      applicationIds: [],
       fileName: null,
       fileSizeKb: null,
       uploadedAt: null,
@@ -965,12 +972,331 @@ test('authentication, account management, and document API', async (t) => {
     assertPublicDocument(retrieved.payload.document);
   });
 
+  await t.test('reuses documents across owned applications and preserves legacy association updates', async () => {
+    const createApplicationFor = async (token) => {
+      const response = await request('/api/applications', {
+        method: 'POST',
+        token,
+        body: { processId: 'passport' }
+      });
+      assert.equal(response.status, 201);
+      return response.payload.application;
+    };
+    const firstApplication = await createApplicationFor(primaryToken);
+    const secondApplication = await createApplicationFor(primaryToken);
+    const thirdApplication = await createApplicationFor(primaryToken);
+    const foreignAccount = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Association Isolation User',
+        email: 'association-isolation@example.com',
+        password: 'association-isolation-password'
+      }
+    });
+    const foreignApplication = await createApplicationFor(foreignAccount.payload.token);
+    const legacyDocument = await insertLegacyDocument({
+      ownerId: registration.payload.user.id,
+      name: 'Legacy associated document',
+      completed: false,
+      applicationId: firstApplication.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const legacyResponse = await request(`/api/documents/${legacyDocument._id}`, { token: primaryToken });
+    assert.equal(legacyResponse.status, 200);
+    assert.equal(legacyResponse.payload.document.applicationId, firstApplication.id);
+    assert.deepEqual(legacyResponse.payload.document.applicationIds, [firstApplication.id]);
+
+    const uploaded = await uploadPdf(primaryToken, 'Reusable identity document', {
+      documentType: 'identity-card',
+      applicationId: firstApplication.id
+    });
+    assert.equal(uploaded.status, 201);
+    const documentId = uploaded.payload.document.id;
+    assert.deepEqual(uploaded.payload.document.applicationIds, [firstApplication.id]);
+
+    const malformedDocumentId = await request('/api/documents/not-an-id/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: secondApplication.id }
+    });
+    assert.equal(malformedDocumentId.status, 400);
+
+    const missingBodyField = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: {}
+    });
+    assert.equal(missingBodyField.status, 400);
+
+    const malformed = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: '../invalid' }
+    });
+    assert.equal(malformed.status, 400);
+
+    const missingApplication = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: 'app-not-found' }
+    });
+    assert.equal(missingApplication.status, 404);
+
+    const foreignAssociation = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: foreignApplication.id }
+    });
+    assert.equal(foreignAssociation.status, 404);
+
+    const foreignDocumentAccess = await request(
+      `/api/documents/${documentId}/applications/${firstApplication.id}`,
+      { method: 'DELETE', token: foreignAccount.payload.token }
+    );
+    assert.equal(foreignDocumentAccess.status, 404);
+
+    const malformedDetachId = await request(
+      `/api/documents/${documentId}/applications/not-an-application`,
+      { method: 'DELETE', token: primaryToken }
+    );
+    assert.equal(malformedDetachId.status, 400);
+
+    const missingDetachApplication = await request(
+      `/api/documents/${documentId}/applications/app-not-found`,
+      { method: 'DELETE', token: primaryToken }
+    );
+    assert.equal(missingDetachApplication.status, 404);
+
+    const firstDuplicate = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: firstApplication.id }
+    });
+    assert.equal(firstDuplicate.status, 200);
+    assert.deepEqual(firstDuplicate.payload.document.applicationIds, [firstApplication.id]);
+
+    const secondAssociation = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: secondApplication.id }
+    });
+    assert.equal(secondAssociation.status, 200);
+    assert.deepEqual(secondAssociation.payload.document.applicationIds, [
+      firstApplication.id,
+      secondApplication.id
+    ]);
+
+    const primaryChange = await request(`/api/documents/${documentId}`, {
+      method: 'PUT',
+      token: primaryToken,
+      body: { applicationId: thirdApplication.id }
+    });
+    assert.equal(primaryChange.status, 200);
+    assert.equal(primaryChange.payload.document.applicationId, thirdApplication.id);
+    assert.deepEqual(primaryChange.payload.document.applicationIds, [
+      secondApplication.id,
+      thirdApplication.id
+    ]);
+
+    const thirdAssociation = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: thirdApplication.id }
+    });
+    assert.equal(thirdAssociation.status, 200);
+    assert.deepEqual(thirdAssociation.payload.document.applicationIds, [
+      secondApplication.id,
+      thirdApplication.id
+    ]);
+
+    const linked = await request(
+      `/api/applications/${secondApplication.id}/requirements/identity-card`,
+      {
+        method: 'PATCH',
+        token: primaryToken,
+        body: { status: 'completed', documentId }
+      }
+    );
+    assert.equal(linked.status, 200);
+
+    const blockedDetach = await request(
+      `/api/documents/${documentId}/applications/${secondApplication.id}`,
+      { method: 'DELETE', token: primaryToken }
+    );
+    assert.equal(blockedDetach.status, 409);
+
+    const unlinked = await request(
+      `/api/applications/${secondApplication.id}/requirements/identity-card`,
+      {
+        method: 'PATCH',
+        token: primaryToken,
+        body: { status: 'missing', documentId: null }
+      }
+    );
+    assert.equal(unlinked.status, 200);
+
+    const detached = await request(
+      `/api/documents/${documentId}/applications/${secondApplication.id}`,
+      { method: 'DELETE', token: primaryToken }
+    );
+    assert.equal(detached.status, 200);
+    assert.equal(detached.payload.document.applicationId, thirdApplication.id);
+    assert.deepEqual(detached.payload.document.applicationIds, [thirdApplication.id]);
+    assert.equal((await requestFile(`/api/documents/${documentId}/file`, primaryToken)).status, 200);
+
+    const retryDetach = await request(
+      `/api/documents/${documentId}/applications/${secondApplication.id}`,
+      { method: 'DELETE', token: primaryToken }
+    );
+    assert.equal(retryDetach.status, 200);
+    assert.deepEqual(retryDetach.payload.document.applicationIds, [thirdApplication.id]);
+
+    const rejectedLink = await request(
+      `/api/applications/${secondApplication.id}/requirements/identity-card`,
+      {
+        method: 'PATCH',
+        token: primaryToken,
+        body: { status: 'completed', documentId }
+      }
+    );
+    assert.equal(rejectedLink.status, 400);
+    assert.deepEqual(rejectedLink.payload.details, ['Document must belong to this application.']);
+  });
+
+  await t.test('recovers permanent document deletion after a partial cross-database failure', async () => {
+    const firstApplication = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    const secondApplication = await request('/api/applications', {
+      method: 'POST',
+      token: primaryToken,
+      body: { processId: 'passport' }
+    });
+    const uploaded = await uploadPdf(primaryToken, 'Deletion recovery document', {
+      documentType: 'identity-card',
+      applicationId: firstApplication.payload.application.id
+    });
+    assert.equal(uploaded.status, 201);
+    const documentId = uploaded.payload.document.id;
+    const association = await request(`/api/documents/${documentId}/applications`, {
+      method: 'POST',
+      token: primaryToken,
+      body: { applicationId: secondApplication.payload.application.id }
+    });
+    assert.equal(association.status, 200);
+
+    for (const applicationId of [
+      firstApplication.payload.application.id,
+      secondApplication.payload.application.id
+    ]) {
+      const linked = await request(
+        `/api/applications/${applicationId}/requirements/identity-card`,
+        {
+          method: 'PATCH',
+          token: primaryToken,
+          body: { status: 'completed', documentId }
+        }
+      );
+      assert.equal(linked.status, 200);
+    }
+
+    const stored = await findStoredDocument(documentId);
+    const filePath = path.join(uploadsDirectory, stored.storageKey);
+    const originalUpdate = applicationsDatabase.update;
+    const originalConsoleError = console.error;
+    let failOnce = true;
+    applicationsDatabase.update = function update(query, ...args) {
+      if (query._id === secondApplication.payload.application.id && failOnce) {
+        failOnce = false;
+        return args.at(-1)(new Error('Injected checklist cleanup failure.'));
+      }
+      return originalUpdate.call(this, query, ...args);
+    };
+    console.error = () => {};
+
+    try {
+      const failedDelete = await request(`/api/documents/${documentId}`, {
+        method: 'DELETE',
+        token: primaryToken
+      });
+      assert.equal(failedDelete.status, 500);
+      assert.equal((await findStoredDocument(documentId)).deleting, true);
+      assert.equal(fs.existsSync(filePath), true);
+
+      const blockedAssociation = await request(`/api/documents/${documentId}/applications`, {
+        method: 'POST',
+        token: primaryToken,
+        body: { applicationId: firstApplication.payload.application.id }
+      });
+      assert.equal(blockedAssociation.status, 409);
+
+      const blockedRequirementUpdate = await request(
+        `/api/applications/${firstApplication.payload.application.id}/requirements/identity-card`,
+        {
+          method: 'PATCH',
+          token: primaryToken,
+          body: { status: 'completed', documentId }
+        }
+      );
+      assert.equal(blockedRequirementUpdate.status, 409);
+
+      const blockedMetadataUpdate = await request(`/api/documents/${documentId}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body: { name: 'Must remain pending' }
+      });
+      assert.equal(blockedMetadataUpdate.status, 409);
+
+      const blockedFileReplacement = await requestMultipart(`/api/documents/${documentId}/file`, {
+        method: 'PUT',
+        token: primaryToken,
+        files: [{
+          name: 'replacement.pdf',
+          type: 'application/pdf',
+          buffer: Buffer.from('%PDF-1.7\nreplacement')
+        }]
+      });
+      assert.equal(blockedFileReplacement.status, 409);
+    } finally {
+      applicationsDatabase.update = originalUpdate;
+      console.error = originalConsoleError;
+    }
+
+    const retriedDelete = await request(`/api/documents/${documentId}`, {
+      method: 'DELETE',
+      token: primaryToken
+    });
+    assert.equal(retriedDelete.status, 200);
+    assert.deepEqual(retriedDelete.payload, { message: 'Document deleted successfully.' });
+    assert.equal(await findStoredDocument(documentId), null);
+    assert.equal(fs.existsSync(filePath), false);
+    for (const applicationId of [
+      firstApplication.payload.application.id,
+      secondApplication.payload.application.id
+    ]) {
+      const application = await request(`/api/applications/${applicationId}`, { token: primaryToken });
+      const requirement = application.payload.application.requirements
+        .find((entry) => entry.key === 'identity-card');
+      assert.equal(requirement.status, 'missing');
+      assert.equal(requirement.documentId, null);
+      assert.equal(requirement.completedAt, null);
+    }
+  });
+
   await t.test('returns consistent delete errors and requires authentication for every operation', async () => {
     for (const [route, options] of [
       ['/api/documents', { method: 'POST', body: { name: 'No token' } }],
       ['/api/documents', { method: 'GET' }],
       ['/api/documents/0123456789abcdef', { method: 'GET' }],
       ['/api/documents/0123456789abcdef', { method: 'PUT', body: { completed: true } }],
+      ['/api/documents/0123456789abcdef/applications', {
+        method: 'POST',
+        body: { applicationId: 'app-test' }
+      }],
+      ['/api/documents/0123456789abcdef/applications/app-test', { method: 'DELETE' }],
       ['/api/documents/0123456789abcdef', { method: 'DELETE' }]
     ]) {
       const response = await request(route, options);
@@ -2168,7 +2494,7 @@ test('authentication, account management, and document API', async (t) => {
     assert.equal(requirement.completedAt, null);
   });
 
-  await t.test('does not delete a document or its requirement reference when file removal fails', async () => {
+  await t.test('recovers document deletion after file removal fails following reference cleanup', async () => {
     const application = await request('/api/applications', {
       method: 'POST',
       token: primaryToken,
@@ -2214,13 +2540,20 @@ test('authentication, account management, and document API', async (t) => {
 
     assert.ok(await findStoredDocument(fileDocument._id));
     assert.equal(fs.existsSync(filePath), true);
-    const stillLinked = await request(
+    assert.equal((await findStoredDocument(fileDocument._id)).deleting, true);
+    const clearedApplication = await request(
       `/api/applications/${application.payload.application.id}`,
       { token: primaryToken }
     );
-    const requirement = stillLinked.payload.application.requirements
+    const requirement = clearedApplication.payload.application.requirements
       .find((entry) => entry.key === 'identity-card');
-    assert.equal(requirement.documentId, fileDocument._id);
+    assert.equal(requirement.status, 'missing');
+    assert.equal(requirement.documentId, null);
+    assert.equal(requirement.completedAt, null);
+
+    await documentRoutes.recoverPendingDocumentDeletions();
+    assert.equal(await findStoredDocument(fileDocument._id), null);
+    assert.equal(fs.existsSync(filePath), false);
   });
 
   await t.test('account deletion removes only owned files and tolerates missing files', async () => {
