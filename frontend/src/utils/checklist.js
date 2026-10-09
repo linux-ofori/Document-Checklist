@@ -130,18 +130,36 @@ export function findRequirementByType(requirements = [], type) {
   return requirements.find((requirement) => requirement.type === type) ?? null
 }
 
+export function getDocumentApplicationIds(document) {
+  const applicationIds = Array.isArray(document?.applicationIds)
+    ? document.applicationIds
+    : [document?.applicationId]
+  return [...new Set(applicationIds.filter((id) => typeof id === 'string' && id.trim()))]
+}
+
+export function normalizeDocumentAssociations(document) {
+  const applicationIds = getDocumentApplicationIds(document)
+  const applicationId = applicationIds.includes(document?.applicationId)
+    ? document.applicationId
+    : applicationIds[0] ?? null
+
+  return { ...document, applicationIds, applicationId }
+}
+
 export function searchDocuments(documents, query, applications) {
   const term = String(query ?? '').trim().toLowerCase()
   if (!term) return documents
 
   return documents.filter((document) => {
-    const application = applications.find((entry) => entry.id === document.applicationId)
+    const linkedApplicationNames = applications
+      .filter((application) => getDocumentApplicationIds(document).includes(application.id))
+      .map((application) => application.name)
     const haystack = [
       document.name,
       document.documentType,
       document.typeLabel,
       document.fileName,
-      application?.name,
+      ...linkedApplicationNames,
     ]
       .filter(Boolean)
       .join(' ')

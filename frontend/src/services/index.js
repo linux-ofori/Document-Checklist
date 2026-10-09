@@ -23,6 +23,8 @@ export {
   replaceDocumentFile,
   updateDocumentRecord,
   removeDocumentRecord,
+  addDocumentApplication,
+  removeDocumentApplication,
 } from './documentService'
 export {
   fetchNotifications,

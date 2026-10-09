@@ -7,6 +7,8 @@ import {
   calculateProgress,
   documentBadgeStatus,
   documentExpiryState,
+  getDocumentApplicationIds,
+  normalizeDocumentAssociations,
   summariseChecklist,
 } from './checklist'
 
@@ -38,7 +40,9 @@ export function buildApplicationView(application, documents = []) {
   const summary = summariseChecklist(requirements)
   const progress = calculateProgress(requirements)
   const process = getProcessById(application.processId)
-  const linkedDocuments = documents.filter((document) => document.applicationId === application.id)
+  const linkedDocuments = documents.filter((document) =>
+    getDocumentApplicationIds(document).includes(application.id),
+  )
 
   const checklistComplete = summary.total > 0 && summary.missing === 0 && summary.inProgress === 0
   const status = application.status === 'submitted' ? 'submitted' : checklistComplete ? 'completed' : 'in-progress'
@@ -68,14 +72,22 @@ export function buildApplicationView(application, documents = []) {
 export function buildDocumentView(document, applications = []) {
   if (!document) return null
 
-  const application = applications.find((entry) => entry.id === document.applicationId) ?? null
-  const expiry = documentExpiryState(document)
+  const normalizedDocument = normalizeDocumentAssociations(document)
+  const linkedApplications = normalizedDocument.applicationIds
+    .map((applicationId) => applications.find((entry) => entry.id === applicationId))
+    .filter(Boolean)
+  const application = linkedApplications.find(
+    (entry) => entry.id === normalizedDocument.applicationId,
+  ) ?? linkedApplications[0] ?? null
+  const expiry = documentExpiryState(normalizedDocument)
 
   return {
-    ...document,
-    typeLabel: getDocumentTypeLabel(document.documentType),
+    ...normalizedDocument,
+    typeLabel: getDocumentTypeLabel(normalizedDocument.documentType),
     application,
-    applicationName: application?.name ?? 'Not linked',
+    applications: linkedApplications,
+    applicationNames: linkedApplications.map((entry) => entry.name),
+    applicationName: linkedApplications.map((entry) => entry.name).join(', ') || 'Not linked',
     expiryState: expiry,
     isExpiring: expiry === 'expiring' || expiry === 'expired',
     isExpired: expiry === 'expired',

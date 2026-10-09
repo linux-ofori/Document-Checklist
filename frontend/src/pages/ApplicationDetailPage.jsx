@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   CircleCheck,
@@ -42,13 +42,15 @@ export function ApplicationDetailPage({ applicationId }) {
     getDocumentById,
     toggleRequirement,
     setRequirementStatus,
+    showToast,
     openUploadModal,
     openDocumentPreview,
     openAssistant,
     isLoading,
   } = useAppData()
 
-  const [updatingKey, setUpdatingKey] = useState(null)
+  const [updatingKeys, setUpdatingKeys] = useState(() => new Set())
+  const pendingRequirementKeysRef = useRef(new Set())
 
   const application = getApplicationById(applicationId)
 
@@ -87,8 +89,31 @@ export function ApplicationDetailPage({ applicationId }) {
   const { process, summary, requirements, documents } = application
   const isComplete = summary.missing === 0 && summary.inProgress === 0
 
+  const getRequirementUpdateKey = (requirementKey) =>
+    JSON.stringify([application.id, requirementKey])
+
+  const startRequirementUpdate = (requirementKey) => {
+    const updateKey = getRequirementUpdateKey(requirementKey)
+    if (pendingRequirementKeysRef.current.has(updateKey)) return null
+
+    pendingRequirementKeysRef.current.add(updateKey)
+    setUpdatingKeys((current) => new Set(current).add(updateKey))
+    return updateKey
+  }
+
+  const finishRequirementUpdate = (updateKey) => {
+    pendingRequirementKeysRef.current.delete(updateKey)
+    setUpdatingKeys((current) => {
+      const next = new Set(current)
+      next.delete(updateKey)
+      return next
+    })
+  }
+
   const runUpdate = async (requirement, nextStatus) => {
-    setUpdatingKey(requirement.key)
+    const updateKey = startRequirementUpdate(requirement.key)
+    if (updateKey === null) return false
+
     try {
       if (nextStatus === undefined) {
         await toggleRequirement(application.id, requirement.key, requirement.status)
@@ -96,7 +121,25 @@ export function ApplicationDetailPage({ applicationId }) {
         await setRequirementStatus(application.id, requirement.key, nextStatus)
       }
     } finally {
-      setUpdatingKey(null)
+      finishRequirementUpdate(updateKey)
+    }
+  }
+
+  const handleUnlinkDocument = async (requirement) => {
+    const updateKey = startRequirementUpdate(requirement.key)
+    if (updateKey === null) return false
+
+    try {
+      const updated = await setRequirementStatus(
+        application.id,
+        requirement.key,
+        requirement.status,
+        null,
+        { requireConfirmedResponse: true },
+      )
+      if (updated) showToast('Document unlinked from checklist.')
+    } finally {
+      finishRequirementUpdate(updateKey)
     }
   }
 
@@ -138,8 +181,9 @@ export function ApplicationDetailPage({ applicationId }) {
             onSetStatus={(item, status) => runUpdate(item, status)}
             onUpload={handleUpload}
             onReplaceDocument={handleReplaceDocument}
+            onUnlinkDocument={handleUnlinkDocument}
             onViewDocument={(document) => openDocumentPreview(document.id)}
-            isUpdating={updatingKey === requirement.key}
+            isUpdating={updatingKeys.has(getRequirementUpdateKey(requirement.key))}
           />
         ))}
       </ul>

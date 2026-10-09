@@ -1,4 +1,4 @@
-import { CircleCheck, FileText, Hourglass, Paperclip, TriangleAlert } from 'lucide-react'
+import { CircleCheck, FileText, Hourglass, Paperclip, TriangleAlert, Unlink } from 'lucide-react'
 import { Button, Checkbox, Dropdown, StatusBadge } from '../ui'
 import { formatDate } from '../../utils/format'
 import { CHECKLIST_STATUS_LABELS } from '../../utils/checklist'
@@ -22,6 +22,7 @@ export function ChecklistItem({
   onSetStatus,
   onUpload,
   onReplaceDocument,
+  onUnlinkDocument,
   onViewDocument,
   isUpdating = false,
 }) {
@@ -86,6 +87,7 @@ export function ChecklistItem({
             variant="outline"
             size="sm"
             leadingIcon={<FileText size={14} aria-hidden="true" />}
+            disabled={isUpdating}
             onClick={() => onUpload?.(requirement)}
           >
             Upload
@@ -99,21 +101,21 @@ export function ChecklistItem({
               id: 'complete',
               label: 'Mark as completed',
               icon: <CircleCheck size={15} aria-hidden="true" />,
-              isDisabled: isComplete,
+              isDisabled: isUpdating || isComplete,
               onSelect: () => onSetStatus?.(requirement, 'completed'),
             },
             {
               id: 'progress',
               label: 'Mark as in progress',
               icon: <StatusIconComponent size={15} aria-hidden="true" />,
-              isDisabled: requirement.status === 'in-progress',
+              isDisabled: isUpdating || requirement.status === 'in-progress',
               onSelect: () => onSetStatus?.(requirement, 'in-progress'),
             },
             {
               id: 'missing',
               label: 'Mark as missing',
               icon: <TriangleAlert size={15} aria-hidden="true" />,
-              isDisabled: requirement.status === 'missing',
+              isDisabled: isUpdating || requirement.status === 'missing',
               onSelect: () => onSetStatus?.(requirement, 'missing'),
             },
             { id: 'divider', type: 'divider' },
@@ -121,6 +123,7 @@ export function ChecklistItem({
               id: linkedDocument ? 'replace-document' : 'upload',
               label: linkedDocument ? 'Replace document' : 'Upload document',
               icon: <FileText size={15} aria-hidden="true" />,
+              isDisabled: isUpdating,
               onSelect: () => {
                 if (linkedDocument?.id) {
                   onReplaceDocument?.(linkedDocument)
@@ -129,6 +132,16 @@ export function ChecklistItem({
                 }
               },
             },
+            ...(linkedDocument
+              ? [{
+                  id: 'unlink-document',
+                  label: 'Unlink from checklist',
+                  icon: <Unlink size={15} aria-hidden="true" />,
+                  isDestructive: true,
+                  isDisabled: isUpdating,
+                  onSelect: () => onUnlinkDocument?.(requirement),
+                }]
+              : []),
           ]}
         />
       </div>

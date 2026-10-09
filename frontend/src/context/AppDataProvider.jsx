@@ -6,8 +6,10 @@ import {
   fetchNotifications,
   fetchProcesses,
   isNotification,
+  addDocumentApplication,
   readAllNotifications,
   readNotification,
+  removeDocumentApplication,
   removeDocumentRecord,
   savePassword,
   savePreferences,
@@ -83,28 +85,78 @@ function safeAccountError(error, operation) {
     : 'We could not save your account changes. Please try again.'
 }
 
+function getConfirmedRequirement(result, applicationId, requirementKey, status, documentId) {
+  const application = result?.application
+  if (application?.id !== applicationId) return null
+
+  const matchingRequirements = Array.isArray(application.requirements)
+    ? application.requirements.filter((entry) => entry.key === requirementKey)
+    : []
+  if (matchingRequirements.length > 1) return null
+
+  let requirement
+  if (result?.requirement !== undefined) {
+    if (result.requirement?.key !== requirementKey) return null
+    requirement = result.requirement
+    if (
+      matchingRequirements.length === 1
+      && (
+        matchingRequirements[0].status !== status
+        || matchingRequirements[0].documentId !== documentId
+      )
+    ) {
+      return null
+    }
+  } else {
+    requirement = matchingRequirements[0]
+  }
+
+  if (
+    !requirement
+    || requirement.status !== status
+    || !Object.hasOwn(requirement, 'documentId')
+    || requirement.documentId !== documentId
+  ) {
+    return null
+  }
+
+  return requirement
+}
+
 export function AppDataProvider({ children }) {
   const [state, dispatch] = useReducer(appDataReducer, INITIAL_STATE)
   const [hydrationRetry, setHydrationRetry] = useState(0)
   const [notificationRetry, setNotificationRetry] = useState(0)
   const { status: authStatus, user, updateUser, signOut } = useAuth()
-  const hydrationRef = useRef({ sessionId: null, promise: null })
+  const hydrationRef = useRef({
+    sessionId: null,
+    generation: null,
+    promise: null,
+    status: 'idle',
+  })
+  const userRef = useRef(user)
   const sessionId = user?.id ?? user?.email ?? null
-  const authSessionRef = useRef({ authStatus, sessionId, generation: 0 })
+  const [authSession, setAuthSession] = useState(() => ({
+    authStatus,
+    sessionId,
+    generation: 0,
+  }))
+  const sessionChanged = authSession.authStatus !== authStatus
+    || authSession.sessionId !== sessionId
+  const sessionGeneration = authSession.generation + (sessionChanged ? 1 : 0)
+  if (sessionChanged) {
+    setAuthSession({ authStatus, sessionId, generation: sessionGeneration })
+  }
+  const authSessionRef = useRef(authSession)
   const notificationVersionRef = useRef(state.notificationVersion)
 
   useLayoutEffect(() => {
-    if (
-      authSessionRef.current.authStatus !== authStatus
-      || authSessionRef.current.sessionId !== sessionId
-    ) {
-      authSessionRef.current = {
-        authStatus,
-        sessionId,
-        generation: authSessionRef.current.generation + 1,
-      }
-    }
-  }, [authStatus, sessionId])
+    authSessionRef.current = authSession
+  }, [authSession])
+
+  useLayoutEffect(() => {
+    userRef.current = user
+  }, [user])
 
   useLayoutEffect(() => {
     notificationVersionRef.current = state.notificationVersion
@@ -119,20 +171,39 @@ export function AppDataProvider({ children }) {
 
   useEffect(() => {
     if (authStatus === 'unauthenticated') {
-      hydrationRef.current = { sessionId: null, promise: null }
+      const sessionGeneration = authSessionRef.current.generation
+      hydrationRef.current = {
+        sessionId: null,
+        generation: sessionGeneration,
+        promise: null,
+        status: 'idle',
+      }
       setHydrationRetry(0)
-      dispatch({ type: ACTIONS.AUTH_RESET })
+      dispatch({
+        type: ACTIONS.AUTH_RESET,
+        payload: { sessionId: null, sessionGeneration },
+      })
       return undefined
     }
 
     if (authStatus !== 'authenticated') return undefined
 
-    if (hydrationRef.current.sessionId !== sessionId) {
-      hydrationRef.current = { sessionId, promise: null }
-      dispatch({ type: ACTIONS.AUTH_RESET })
-    } else if (hydrationRef.current.promise) {
-      return undefined
-    }
+    const sessionGeneration = authSessionRef.current.generation
+    if (
+      hydrationRef.current.sessionId !== sessionId
+      || hydrationRef.current.generation !== sessionGeneration
+    ) {
+      hydrationRef.current = {
+        sessionId,
+        generation: sessionGeneration,
+        promise: null,
+        status: 'idle',
+      }
+      dispatch({
+        type: ACTIONS.AUTH_RESET,
+        payload: { sessionId, sessionGeneration },
+      })
+    } else if (hydrationRef.current.status === 'succeeded') return undefined
 
     if (!hydrationRef.current.promise) {
       const hydrationPromise = Promise.all([
@@ -144,34 +215,56 @@ export function AppDataProvider({ children }) {
           processes,
           applications,
           documents,
-          profile: normalizeProfile(user),
+          profile: normalizeProfile(userRef.current),
         }))
+        .then((payload) => {
+          if (
+            hydrationRef.current.sessionId === sessionId
+            && hydrationRef.current.generation === sessionGeneration
+            && hydrationRef.current.promise === hydrationPromise
+          ) {
+            hydrationRef.current.status = 'succeeded'
+          }
+          return payload
+        })
         .catch((error) => {
-          if (hydrationRef.current.promise === hydrationPromise) {
+          if (
+            hydrationRef.current.sessionId === sessionId
+            && hydrationRef.current.generation === sessionGeneration
+            && hydrationRef.current.promise === hydrationPromise
+          ) {
             hydrationRef.current.promise = null
+            hydrationRef.current.status = 'idle'
           }
           throw error
         })
       hydrationRef.current.promise = hydrationPromise
+      hydrationRef.current.status = 'pending'
     }
 
     let isActive = true
     hydrationRef.current.promise
       .then((payload) => {
-        if (isActive) dispatch({ type: ACTIONS.HYDRATE, payload })
+        if (!isActive || !isCurrentSession(sessionGeneration)) return
+        dispatch({
+          type: ACTIONS.HYDRATE,
+          payload: { ...payload, sessionId, sessionGeneration },
+        })
       })
       .catch((error) => {
-        if (!isActive) return
+        if (!isActive || !isCurrentSession(sessionGeneration)) return
         dispatch({
           type: ACTIONS.HYDRATE_FAILED,
           payload: error instanceof Error ? error.message : 'We could not load your account data.',
+          sessionId,
+          sessionGeneration,
         })
       })
 
     return () => {
       isActive = false
     }
-  }, [authStatus, hydrationRetry, sessionId, user])
+  }, [authStatus, hydrationRetry, isCurrentSession, sessionId])
 
   useEffect(() => {
     if (authStatus !== 'authenticated') return undefined
@@ -222,27 +315,37 @@ export function AppDataProvider({ children }) {
     }
   }, [])
 
+  const sessionState = authStatus === 'authenticated'
+    && state.sessionId === sessionId
+    && state.sessionGeneration === sessionGeneration
+    ? state
+    : INITIAL_STATE
+
   const applicationViews = useMemo(
-    () => state.applications.map((application) => buildApplicationView(application, state.documents)),
-    [state.applications, state.documents],
+    () => sessionState.applications.map(
+      (application) => buildApplicationView(application, sessionState.documents),
+    ),
+    [sessionState.applications, sessionState.documents],
   )
 
   const documentViews = useMemo(
     () =>
       sortByCreatedAtDesc(
-        state.documents.map((document) => buildDocumentView(document, state.applications)),
+        sessionState.documents.map(
+          (document) => buildDocumentView(document, sessionState.applications),
+        ),
       ),
-    [state.documents, state.applications],
+    [sessionState.documents, sessionState.applications],
   )
 
   const notificationViews = useMemo(
     () =>
       sortByCreatedAtDesc(
-        state.notifications.map((notification) =>
-          buildNotificationView(notification, state.applications, state.documents),
+        sessionState.notifications.map((notification) =>
+          buildNotificationView(notification, sessionState.applications, sessionState.documents),
         ),
       ),
-    [state.notifications, state.applications, state.documents],
+    [sessionState.notifications, sessionState.applications, sessionState.documents],
   )
 
   const stats = useMemo(
@@ -268,14 +371,27 @@ export function AppDataProvider({ children }) {
     return () => window.clearTimeout(timer)
   }, [state.toast])
 
-  const setRequirementStatus = useCallback(async (applicationId, requirementKey, status) => {
-    const requestSessionGeneration = authSessionRef.current.generation
+  const setRequirementStatus = useCallback(async (
+    applicationId,
+    requirementKey,
+    status,
+    documentIdOverride,
+    {
+      suppressErrorToast = false,
+      expectedSessionGeneration,
+      requireConfirmedResponse = false,
+    } = {},
+  ) => {
+    const requestSessionGeneration = expectedSessionGeneration
+      ?? authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return false
     const application = state.applications.find((entry) => entry.id === applicationId)
     if (!application) {
       throw new Error('Application not found.')
     }
     const requirement = (application.requirements ?? [])
       .find((entry) => entry.key === requirementKey)
+      ?? buildRequirements(application).find((entry) => entry.key === requirementKey)
     if (!requirement) {
       throw new Error('Checklist requirement not found.')
     }
@@ -287,38 +403,62 @@ export function AppDataProvider({ children }) {
         applicationId,
         requirementKey,
         status,
-        documentId: requirement.documentId ?? undefined,
+        documentId: documentIdOverride !== undefined
+          ? documentIdOverride
+          : requirement.documentId ?? undefined,
       })
     } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return false
       const errorMessage = error instanceof Error
         ? error.message
         : 'We could not update the checklist.'
-      if (isCurrentSession(requestSessionGeneration)) {
+      if (!suppressErrorToast) {
         showToast(errorMessage, 'warning')
       }
       throw error
     }
-    if (!isCurrentSession(requestSessionGeneration)) return
+    if (!isCurrentSession(requestSessionGeneration)) return false
 
-    const savedRequirement = result?.requirement
-      ?? result?.application?.requirements?.find((entry) => entry.key === requirementKey)
+    const confirmedRequirement = requireConfirmedResponse
+      ? getConfirmedRequirement(result, applicationId, requirementKey, status, documentIdOverride)
+      : null
+    if (requireConfirmedResponse && !confirmedRequirement) {
+      const error = new Error('The server did not confirm this document link. Please retry the checklist link.')
+      if (!suppressErrorToast) showToast(error.message, 'warning')
+      throw error
+    }
+
+    const savedRequirement = requireConfirmedResponse
+      ? confirmedRequirement
+      : result?.requirement
+        ?? result?.application?.requirements?.find((entry) => entry.key === requirementKey)
     const patch = {
-      status: savedRequirement?.status ?? status,
-      documentId: Object.hasOwn(savedRequirement ?? {}, 'documentId')
+      status: requireConfirmedResponse ? savedRequirement.status : savedRequirement?.status ?? status,
+      documentId: requireConfirmedResponse
         ? savedRequirement.documentId
-        : requirement.documentId ?? null,
-      completedAt: Object.hasOwn(savedRequirement ?? {}, 'completedAt')
+        : Object.hasOwn(savedRequirement ?? {}, 'documentId')
+        ? savedRequirement.documentId
+        : documentIdOverride ?? requirement.documentId ?? null,
+      completedAt: requireConfirmedResponse
+        ? savedRequirement.completedAt ?? completedAt
+        : Object.hasOwn(savedRequirement ?? {}, 'completedAt')
         ? savedRequirement.completedAt
         : completedAt,
     }
 
     dispatch({
       type: ACTIONS.REQUIREMENT_UPDATED,
-      payload: { applicationId, requirementKey, patch },
+      payload: {
+        applicationId,
+        requirementKey,
+        patch,
+        requirement,
+      },
     })
     if (isNotification(result?.notification)) {
       dispatch({ type: ACTIONS.NOTIFICATION_UPSERTED, payload: result.notification })
     }
+    return true
   }, [isCurrentSession, state.applications, showToast])
 
   const toggleRequirement = useCallback(
@@ -505,6 +645,93 @@ export function AppDataProvider({ children }) {
     }
   }, [showToast])
 
+  const associateDocumentWithApplication = useCallback(async (
+    documentId,
+    applicationId,
+    {
+      suppressSuccessToast = false,
+      suppressErrorToast = false,
+      expectedSessionGeneration,
+    } = {},
+  ) => {
+    const requestSessionGeneration = expectedSessionGeneration
+      ?? authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return false
+    try {
+      const updatedDocument = await addDocumentApplication(documentId, applicationId)
+      if (!isCurrentSession(requestSessionGeneration)) return false
+      dispatch({
+        type: ACTIONS.DOCUMENT_PATCHED,
+        payload: { id: documentId, patch: updatedDocument },
+      })
+      if (!suppressSuccessToast) showToast('Document linked to application.')
+      return true
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return false
+      if (!suppressErrorToast) {
+        showToast('We could not link this document to the application. Please try again.', 'warning')
+      }
+      throw error
+    }
+  }, [isCurrentSession, showToast])
+
+  const associateDocumentAndLinkRequirement = useCallback(async (
+    documentId,
+    applicationId,
+    requirementKey,
+  ) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    const associated = await associateDocumentWithApplication(
+      documentId,
+      applicationId,
+      {
+        suppressSuccessToast: true,
+        suppressErrorToast: true,
+        expectedSessionGeneration: requestSessionGeneration,
+      },
+    )
+    if (!associated || !isCurrentSession(requestSessionGeneration)) return false
+
+    try {
+      const linked = await setRequirementStatus(
+        applicationId,
+        requirementKey,
+        'completed',
+        documentId,
+        {
+          suppressErrorToast: true,
+          expectedSessionGeneration: requestSessionGeneration,
+          requireConfirmedResponse: true,
+        },
+      )
+      if (!linked || !isCurrentSession(requestSessionGeneration)) return false
+      return { associationSucceeded: true, linked: true }
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return false
+      return { associationSucceeded: true, linked: false, error }
+    }
+  }, [associateDocumentWithApplication, isCurrentSession, setRequirementStatus])
+
+  const detachDocumentFromApplication = useCallback(async (documentId, applicationId) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    try {
+      const updatedDocument = await removeDocumentApplication(documentId, applicationId)
+      if (!isCurrentSession(requestSessionGeneration)) return
+      dispatch({
+        type: ACTIONS.DOCUMENT_PATCHED,
+        payload: { id: documentId, patch: updatedDocument },
+      })
+      showToast('Document detached from application.', 'neutral')
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return
+      const message = error?.status === 409
+        ? 'Unlink or replace this document on the application checklist before detaching it.'
+        : 'We could not detach this document from the application. Please try again.'
+      showToast(message, 'warning')
+      throw error
+    }
+  }, [isCurrentSession, showToast])
+
   const removeDocument = useCallback(
     async (documentId) => {
       const document = state.documents.find((entry) => entry.id === documentId)
@@ -686,17 +913,17 @@ export function AppDataProvider({ children }) {
 
   const value = useMemo(
     () => ({
-      ...state,
-      isLoading: state.status === 'loading',
-      error: state.error,
+      ...sessionState,
+      isLoading: sessionState.status === 'loading',
+      error: sessionState.error,
       retryHydration,
       retryNotifications,
       applicationViews,
       documentViews,
       notificationViews,
-      notificationsStatus: state.notificationsStatus,
-      notificationsError: state.notificationsError,
-      notificationsRefreshing: state.notificationsRefreshing,
+      notificationsStatus: sessionState.notificationsStatus,
+      notificationsError: sessionState.notificationsError,
+      notificationsRefreshing: sessionState.notificationsRefreshing,
       stats,
       getApplicationById: (id) =>
         applicationViews.find((application) => application.id === id) ?? null,
@@ -712,6 +939,9 @@ export function AppDataProvider({ children }) {
       submitUpload,
       replaceDocument,
       updateDocument,
+      associateDocumentWithApplication,
+      associateDocumentAndLinkRequirement,
+      detachDocumentFromApplication,
       removeDocument,
       markNotificationRead,
       markAllNotificationsRead,
@@ -727,7 +957,7 @@ export function AppDataProvider({ children }) {
       dismissToast,
     }),
     [
-      state,
+      sessionState,
       retryHydration,
       applicationViews,
       documentViews,
@@ -743,6 +973,9 @@ export function AppDataProvider({ children }) {
       submitUpload,
       replaceDocument,
       updateDocument,
+      associateDocumentWithApplication,
+      associateDocumentAndLinkRequirement,
+      detachDocumentFromApplication,
       removeDocument,
       markNotificationRead,
       markAllNotificationsRead,

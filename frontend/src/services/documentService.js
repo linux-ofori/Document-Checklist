@@ -77,6 +77,22 @@ export async function removeDocumentRecord(documentId) {
   return request(`documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' })
 }
 
+export async function addDocumentApplication(documentId, applicationId) {
+  const payload = await request(`documents/${encodeURIComponent(documentId)}/applications`, {
+    method: 'POST',
+    body: { applicationId },
+  })
+  return documentFromResponse(payload)
+}
+
+export async function removeDocumentApplication(documentId, applicationId) {
+  const payload = await request(
+    `documents/${encodeURIComponent(documentId)}/applications/${encodeURIComponent(applicationId)}`,
+    { method: 'DELETE' },
+  )
+  return documentFromResponse(payload)
+}
+
 export function fetchDocumentFile(documentId) {
   return request(`documents/${encodeURIComponent(documentId)}/file`, {
     responseType: 'blob',

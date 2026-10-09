@@ -58,8 +58,10 @@ export function DocumentRow({ document, onView, onRename, onRefreshExpiry, onRem
       <td className="document-row__type">{document.typeLabel}</td>
 
       <td className="document-row__application">
-        {document.application ? (
-          <span className="document-row__pill">{document.application.name}</span>
+        {document.applicationNames?.length > 0 ? (
+          <span className="document-row__pill">{document.applicationNames.join(', ')}</span>
+        ) : document.applicationName && document.applicationName !== 'Not linked' ? (
+          <span className="document-row__pill">{document.applicationName}</span>
         ) : (
           <span className="ui-caption">Not linked</span>
         )}

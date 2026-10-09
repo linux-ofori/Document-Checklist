@@ -2,9 +2,14 @@ import { useMemo, useRef, useState } from 'react'
 import { CalendarClock, Info, Link2, Sparkles } from 'lucide-react'
 import { Alert, Button, Dropzone, Input, Modal, Select } from '../ui'
 import { useAppData } from '../../hooks/useAppData'
-import { validateUploadForm } from '../../utils/validation'
+import {
+  MAX_UPLOAD_SIZE_BYTES,
+  validateUploadFile,
+  validateUploadForm,
+} from '../../utils/validation'
 import {
   addMonths,
+  formatDate,
   formatFileSize,
   toLocalDateInputValue,
 } from '../../utils/format'
@@ -13,8 +18,7 @@ import {
   DOCUMENT_TYPE_OPTIONS,
   getDocumentTypeLabel,
 } from '../../data'
-import { findRequirementByType } from '../../utils/checklist'
-import { MAX_UPLOAD_SIZE_BYTES, validateUploadFile } from '../../utils/validation'
+import { findRequirementByType, getDocumentApplicationIds } from '../../utils/checklist'
 
 const MIN_EXPIRY_DATE = toLocalDateInputValue(new Date())
 
@@ -33,13 +37,23 @@ function getInitialValues(prefill) {
 }
 
 export function UploadDocumentModal() {
-  const { upload, closeUploadModal } = useAppData()
-  const isReplacement = Boolean(upload.prefill?.replacementTarget?.id)
+  const { upload } = useAppData()
 
   if (!upload.isOpen) return null
 
+  return <UploadModalContent upload={upload} />
+}
+
+function UploadModalContent({ upload }) {
+  const { closeUploadModal, error, isLoading, retryHydration } = useAppData()
+  const [mode, setMode] = useState('upload')
+  const [isReuseSubmitting, setIsReuseSubmitting] = useState(false)
+  const isReplacement = Boolean(upload.prefill?.replacementTarget?.id)
+  const isBusy = upload.isSubmitting || isReuseSubmitting
+  const isReuseBlocked = mode === 'existing' && Boolean(error)
+
   const handleClose = () => {
-    if (!upload.isSubmitting) closeUploadModal()
+    if (!isBusy) closeUploadModal()
   }
 
   return (
@@ -50,25 +64,44 @@ export function UploadDocumentModal() {
       description={
         isReplacement
           ? 'Choose a replacement file. The existing document and checklist links will be preserved.'
-          : 'Add a file to your library. We will link it to the checklist item it satisfies.'
+          : 'Upload a new file or reuse a document already in your library.'
       }
       size="lg"
-      closeOnOverlayClick={!upload.isSubmitting}
-      closeOnEscape={!upload.isSubmitting}
-      footer={<UploadFormFooter isReplacement={isReplacement} />}
+      closeOnOverlayClick={!isBusy}
+      closeOnEscape={!isBusy}
+      footer={(
+        <UploadFormFooter
+          isReplacement={isReplacement}
+          mode={mode}
+          isBusy={isBusy}
+          isLoading={isLoading || isReuseBlocked}
+          onCancel={handleClose}
+        />
+      )}
     >
-      <UploadForm prefill={upload.prefill} />
+      <UploadForm
+        key={JSON.stringify([
+          upload.prefill?.applicationId ?? '',
+          upload.prefill?.requirementKey ?? '',
+          upload.prefill?.documentType ?? '',
+          upload.prefill?.replacementTarget?.id ?? '',
+        ])}
+        prefill={upload.prefill}
+        mode={mode}
+        setMode={setMode}
+        isReuseSubmitting={isReuseSubmitting}
+        setIsReuseSubmitting={setIsReuseSubmitting}
+        error={error}
+        retryHydration={retryHydration}
+      />
     </Modal>
   )
 }
 
-function UploadFormFooter({ isReplacement }) {
-  const { upload, closeUploadModal, isLoading } = useAppData()
-  const isSubmitting = upload.isSubmitting
-
+function UploadFormFooter({ isReplacement, mode, isBusy, isLoading, onCancel }) {
   return (
     <>
-      <Button variant="ghost" size="md" onClick={closeUploadModal} disabled={isSubmitting}>
+      <Button variant="ghost" size="md" onClick={onCancel} disabled={isBusy}>
         Cancel
       </Button>
       <Button
@@ -76,28 +109,53 @@ function UploadFormFooter({ isReplacement }) {
         variant="primary"
         size="md"
         form="upload-document-form"
-        isLoading={isSubmitting}
-        disabled={isLoading || isSubmitting}
+        isLoading={isBusy}
+        disabled={isLoading || isBusy}
       >
-        {isSubmitting
-          ? isReplacement ? 'Replacing' : 'Uploading'
-          : isReplacement ? 'Replace file' : 'Upload document'}
+        {isBusy
+          ? isReplacement ? 'Replacing' : mode === 'existing' ? 'Linking' : 'Uploading'
+          : isReplacement ? 'Replace file' : mode === 'existing' ? 'Use selected document' : 'Upload document'}
       </Button>
     </>
   )
 }
 
-function UploadForm({ prefill }) {
-  const { upload, submitUpload, replaceDocument, closeUploadModal, applicationViews } = useAppData()
+function UploadForm({
+  prefill,
+  mode,
+  setMode,
+  isReuseSubmitting,
+  setIsReuseSubmitting,
+  error,
+  retryHydration,
+}) {
+  const {
+    upload,
+    submitUpload,
+    replaceDocument,
+    closeUploadModal,
+    applicationViews,
+    documentViews,
+    isLoading,
+    associateDocumentWithApplication,
+    associateDocumentAndLinkRequirement,
+    setRequirementStatus,
+    showToast,
+  } = useAppData()
   const replacementTarget = prefill?.replacementTarget
   const isReplacement = Boolean(replacementTarget?.id)
+  const isChecklistContext = Boolean(prefill?.applicationId && prefill?.requirementKey)
 
   const [values, setValues] = useState(() => getInitialValues(prefill))
   const [errors, setErrors] = useState({})
   const [submissionError, setSubmissionError] = useState('')
+  const [selectedDocumentId, setSelectedDocumentId] = useState('')
+  const [associationComplete, setAssociationComplete] = useState(null)
   const isSubmittingRef = useRef(false)
 
   const isSubmitting = upload.isSubmitting
+  const isBusy = isSubmitting || isReuseSubmitting
+  const isReuseMode = !isReplacement && mode === 'existing'
 
   const applicationOptions = useMemo(
     () =>
@@ -106,6 +164,52 @@ function UploadForm({ prefill }) {
         label: `${application.name} · ${application.progress}% complete`,
       })),
     [applicationViews],
+  )
+
+  const eligibleDocuments = useMemo(() => {
+    if (!values.applicationId) return []
+
+    const targetRequirement = isChecklistContext
+      ? applicationViews
+        .find((application) => application.id === values.applicationId)
+        ?.requirements.find((requirement) => requirement.key === prefill.requirementKey)
+      : null
+    return [...new Map(documentViews.map((document) => [document.id, document])).values()]
+      .filter((document) => {
+        const matchesRequirement = !isChecklistContext
+          || document.documentType === prefill.documentType
+        const alreadyAssociated = getDocumentApplicationIds(document).includes(values.applicationId)
+        const canRetryRequirementLink = Boolean(
+          isChecklistContext
+          && targetRequirement
+          && targetRequirement.type === document.documentType
+          && targetRequirement.documentId !== document.id,
+        )
+        return matchesRequirement
+          && Boolean(document.id)
+          && (!alreadyAssociated || canRetryRequirementLink)
+      })
+  }, [
+    applicationViews,
+    documentViews,
+    isChecklistContext,
+    prefill,
+    values.applicationId,
+  ])
+
+  const eligibleDocumentOptions = useMemo(
+    () =>
+      eligibleDocuments.map((document) => ({
+        value: document.id,
+        label: [
+          document.name,
+          document.typeLabel ?? getDocumentTypeLabel(document.documentType),
+          document.fileName,
+          document.expiresAt ? `Expires ${formatDate(document.expiresAt)}` : 'No expiry date',
+          document.applicationName !== 'Not linked' ? document.applicationName : null,
+        ].filter(Boolean).join(' · '),
+      })),
+    [eligibleDocuments],
   )
 
   const matchedRequirement = useMemo(() => {
@@ -195,12 +299,144 @@ function UploadForm({ prefill }) {
 
   const handleApplicationChange = (applicationId) => {
     setValues((current) => ({ ...current, applicationId, requirementKey: '' }))
+    setSelectedDocumentId('')
+    setAssociationComplete(null)
     clearError('applicationId')
     setSubmissionError('')
   }
 
+  const handleModeChange = (nextMode) => {
+    if (isBusy || associationComplete) return
+    if (nextMode === 'existing' && isChecklistContext) {
+      setValues((current) => ({
+        ...current,
+        applicationId: prefill.applicationId,
+        documentType: prefill.documentType,
+        requirementKey: prefill.requirementKey,
+      }))
+      setSelectedDocumentId('')
+    }
+    setMode(nextMode)
+    setSubmissionError('')
+  }
+
+  const handleDocumentChange = (documentId) => {
+    setSelectedDocumentId(documentId)
+    setAssociationComplete(null)
+    setSubmissionError('')
+  }
+
+  const handleReuseSubmit = async () => {
+    const selectedDocument = eligibleDocuments.find((document) => document.id === selectedDocumentId)
+    if (selectedDocumentId && !selectedDocument) {
+      setSelectedDocumentId('')
+      setAssociationComplete(null)
+      setSubmissionError(
+        'That document is no longer eligible for this application or checklist item. Choose an eligible document and try again.',
+      )
+      return
+    }
+
+    if (!values.applicationId || !selectedDocument) {
+      setSubmissionError('Choose an application and an eligible document to continue.')
+      return
+    }
+
+    if (isSubmittingRef.current || isBusy) return
+    isSubmittingRef.current = true
+    setIsReuseSubmitting(true)
+    setSubmissionError('')
+
+    const hasPendingAssociation = associationComplete?.documentId === selectedDocument.id
+      && associationComplete.applicationId === values.applicationId
+    const alreadyAssociated = getDocumentApplicationIds(selectedDocument).includes(values.applicationId)
+    let associationSucceeded = hasPendingAssociation || alreadyAssociated
+    if (isChecklistContext && alreadyAssociated && !hasPendingAssociation) {
+      setAssociationComplete({
+        documentId: selectedDocument.id,
+        applicationId: values.applicationId,
+      })
+    }
+    try {
+      if (!hasPendingAssociation && !alreadyAssociated) {
+        if (isChecklistContext) {
+          const result = await associateDocumentAndLinkRequirement(
+            selectedDocument.id,
+            values.applicationId,
+            prefill.requirementKey,
+          )
+          if (!result) return
+
+          setAssociationComplete({
+            documentId: selectedDocument.id,
+            applicationId: values.applicationId,
+          })
+          associationSucceeded = true
+          if (!result.linked) {
+            setSubmissionError(
+              `${selectedDocument.name} is attached to this application, but the checklist link was not confirmed. ${result.error?.message ?? 'Retry the checklist link without uploading or attaching the document again.'}`,
+            )
+            return
+          }
+
+          showToast(`${selectedDocument.name} attached and linked to the checklist.`)
+          closeUploadModal()
+          return
+        }
+
+        const associated = await associateDocumentWithApplication(
+          selectedDocument.id,
+          values.applicationId,
+          { suppressErrorToast: true },
+        )
+        if (associated !== true) return
+        associationSucceeded = true
+      }
+
+      if (isChecklistContext) {
+        const linked = await setRequirementStatus(
+          values.applicationId,
+          prefill.requirementKey,
+          'completed',
+          selectedDocument.id,
+          { suppressErrorToast: true, requireConfirmedResponse: true },
+        )
+        if (linked !== true) return
+        showToast(`${selectedDocument.name} attached and linked to the checklist.`)
+      }
+
+      closeUploadModal()
+    } catch (error) {
+      if (associationSucceeded && isChecklistContext) {
+        setSubmissionError(
+          `${selectedDocument.name} is attached to this application, but the checklist link was not saved. Retry the checklist link without uploading or attaching the document again.`,
+        )
+      } else if (error instanceof TypeError) {
+        setSubmissionError('We could not reach the server. Check your connection and try again.')
+      } else if (error?.status === 401) {
+        setSubmissionError('Your session has expired. Please sign in again.')
+      } else if (error?.status === 404) {
+        setSubmissionError('The document or application is no longer available. Refresh and try again.')
+      } else if (error?.status === 409) {
+        setSubmissionError('This document cannot be attached right now. Refresh your documents and try again.')
+      } else if (error instanceof Error) {
+        setSubmissionError(error.message)
+      } else {
+        setSubmissionError('We could not attach this document. Please try again.')
+      }
+    } finally {
+      isSubmittingRef.current = false
+      setIsReuseSubmitting(false)
+    }
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
+
+    if (isReuseMode) {
+      await handleReuseSubmit()
+      return
+    }
 
     const fileError = isReplacement ? validateUploadFile(values.file) : null
     const validationErrors = isReplacement
@@ -212,7 +448,7 @@ function UploadForm({ prefill }) {
     }
     setErrors({})
 
-    if (isSubmittingRef.current || isSubmitting) return
+    if (isSubmittingRef.current || isBusy) return
 
     isSubmittingRef.current = true
     setSubmissionError('')
@@ -275,33 +511,187 @@ function UploadForm({ prefill }) {
 
   return (
     <form id="upload-document-form" className="upload-form" onSubmit={handleSubmit} noValidate>
-      <Dropzone
-        file={
-          values.fileName ? { name: values.fileName, meta: formatFileSize(values.fileSizeKb) } : null
-        }
-        onFileSelect={handleFile}
-        onFileClear={handleFileClear}
-        onFileError={handleFileError}
-        formats="PDF, JPG, JPEG, PNG"
-        accept=".pdf,.jpg,.jpeg,.png"
-        maxSizeMiB={MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)}
-        disabled={isSubmitting}
-      />
-
-      {errors.file ? (
-        <Alert
-          tone="danger"
-          title={values.file ? 'File not accepted' : 'Choose a file'}
-          description={errors.file}
-        />
+      {!isReplacement ? (
+        <div
+          className="upload-form__mode-choice"
+          role="group"
+          aria-label="Choose how to add a document"
+        >
+          <Button
+            type="button"
+            variant={mode === 'upload' ? 'primary' : 'outline'}
+            size="sm"
+            aria-pressed={mode === 'upload'}
+            disabled={isBusy || Boolean(associationComplete)}
+            onClick={() => handleModeChange('upload')}
+          >
+            Upload new
+          </Button>
+          <Button
+            type="button"
+            variant={mode === 'existing' ? 'primary' : 'outline'}
+            size="sm"
+            aria-pressed={mode === 'existing'}
+            disabled={isBusy || Boolean(associationComplete)}
+            onClick={() => handleModeChange('existing')}
+          >
+            Use existing
+          </Button>
+        </div>
       ) : null}
+
       {submissionError ? (
         <Alert
           tone="danger"
-          title={isReplacement ? 'Replacement could not be completed' : 'Upload could not be completed'}
-          description={`${submissionError} Your file${isReplacement ? '' : ' and entered details'} have been kept so you can retry.`}
+          title={
+            isReplacement
+              ? 'Replacement could not be completed'
+              : isReuseMode && associationComplete
+                ? 'Document attached, checklist link pending'
+                : isReuseMode
+                  ? 'Document could not be attached'
+                  : 'Upload could not be completed'
+          }
+          description={
+            isReuseMode
+              ? submissionError
+              : `${submissionError} Your file${isReplacement ? '' : ' and entered details'} have been kept so you can retry.`
+          }
+          action={
+            isReuseMode && associationComplete && isChecklistContext ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isBusy}
+                onClick={handleReuseSubmit}
+              >
+                Retry checklist link
+              </Button>
+            ) : undefined
+          }
         />
       ) : null}
+
+      {isReuseMode ? (
+        <>
+          {isChecklistContext ? (
+            <Alert
+              tone="info"
+              title={`Checklist item: ${prefill.name}`}
+              description={`The selected document must be a ${getDocumentTypeLabel(prefill.documentType).toLowerCase()}. It will be linked to this exact checklist item.`}
+            />
+          ) : (
+            <Select
+              label="Destination application"
+              required
+              value={values.applicationId}
+              placeholder="Select an application"
+              onChange={(event) => handleApplicationChange(event.target.value)}
+              disabled={isLoading || Boolean(error) || isBusy || Boolean(associationComplete)}
+              options={applicationOptions}
+            />
+          )}
+
+          {isChecklistContext ? (
+            <Alert
+              tone="info"
+              title="Destination application"
+              description={applicationViews.find((application) => application.id === values.applicationId)?.name ?? 'The selected application'}
+            />
+          ) : null}
+
+          {isLoading ? (
+            <Alert
+              tone="info"
+              title="Loading documents"
+              description="Please wait while your document library is loaded."
+            />
+          ) : error ? (
+            <Alert
+              tone="danger"
+              title="Documents could not be loaded"
+              description={error}
+              action={(
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isBusy}
+                  onClick={retryHydration}
+                >
+                  Retry loading
+                </Button>
+              )}
+            />
+          ) : !values.applicationId ? (
+            <Alert
+              tone="info"
+              title="Choose an application"
+              description="Select the application where this existing document should be available."
+            />
+          ) : eligibleDocuments.length === 0 ? (
+            <Alert
+              tone="info"
+              title="No eligible documents"
+              description="There are no matching documents available to attach. Upload a new document, or choose another application."
+            />
+          ) : (
+            <Select
+              label="Existing document"
+              required
+              value={selectedDocumentId}
+              placeholder="Select a document"
+              onChange={(event) => handleDocumentChange(event.target.value)}
+              disabled={isLoading || isBusy || Boolean(associationComplete)}
+              options={eligibleDocumentOptions}
+            />
+          )}
+
+          {selectedDocumentId ? (() => {
+            const selectedDocument = documentViews.find((document) => document.id === selectedDocumentId)
+            if (!selectedDocument) return null
+            return (
+              <Alert
+                tone="info"
+                title={selectedDocument.name}
+                description={[
+                  selectedDocument.fileName,
+                  selectedDocument.typeLabel ?? getDocumentTypeLabel(selectedDocument.documentType),
+                  selectedDocument.statusLabel,
+                  selectedDocument.expiresAt
+                    ? `Expires ${formatDate(selectedDocument.expiresAt)}`
+                    : 'No expiry date',
+                  selectedDocument.applicationName !== 'Not linked'
+                    ? `Already linked to: ${selectedDocument.applicationName}`
+                    : null,
+                ].filter(Boolean).join(' · ')}
+              />
+            )
+          })() : null}
+        </>
+      ) : (
+        <>
+          {errors.file ? (
+            <Alert
+              tone="danger"
+              title={values.file ? 'File not accepted' : 'Choose a file'}
+              description={errors.file}
+            />
+          ) : null}
+
+          <Dropzone
+            file={
+              values.fileName ? { name: values.fileName, meta: formatFileSize(values.fileSizeKb) } : null
+            }
+            onFileSelect={handleFile}
+            onFileClear={handleFileClear}
+            onFileError={handleFileError}
+            formats="PDF, JPG, JPEG, PNG"
+            accept=".pdf,.jpg,.jpeg,.png"
+            maxSizeMiB={MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)}
+            disabled={isBusy}
+          />
 
       {isReplacement ? (
         <Alert
@@ -394,6 +784,8 @@ function UploadForm({ prefill }) {
           </div>
         </>
       ) : null}
+        </>
+      )}
     </form>
   )
 }

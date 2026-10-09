@@ -1,4 +1,5 @@
 import { createId } from '../services'
+import { getDocumentApplicationIds, normalizeDocumentAssociations } from '../utils/checklist'
 
 export const LOGOUT_WARNING_MESSAGE =
   'You’re signed out on this device, but we couldn’t confirm server sign-out.'
@@ -13,6 +14,8 @@ export const ACTIONS = {
   DOCUMENT_ADDED: 'DOCUMENT_ADDED',
   DOCUMENT_PATCHED: 'DOCUMENT_PATCHED',
   DOCUMENT_REMOVED: 'DOCUMENT_REMOVED',
+  DOCUMENT_APPLICATION_ADDED: 'DOCUMENT_APPLICATION_ADDED',
+  DOCUMENT_APPLICATION_REMOVED: 'DOCUMENT_APPLICATION_REMOVED',
   NOTIFICATIONS_LOADING: 'NOTIFICATIONS_LOADING',
   NOTIFICATIONS_LOADED: 'NOTIFICATIONS_LOADED',
   NOTIFICATIONS_FAILED: 'NOTIFICATIONS_FAILED',
@@ -33,6 +36,8 @@ export const ACTIONS = {
 }
 
 export const INITIAL_STATE = {
+  sessionId: null,
+  sessionGeneration: null,
   status: 'loading',
   error: null,
   processes: [],
@@ -68,13 +73,19 @@ function touchApplication(applications, applicationId, patch) {
   )
 }
 
-function updateRequirement(applications, applicationId, requirementKey, patch) {
+function updateRequirement(applications, applicationId, requirementKey, patch, fallbackRequirement) {
   return applications.map((application) => {
     if (application.id !== applicationId) return application
 
-    const requirements = (application.requirements ?? []).map((entry) =>
-      entry.key === requirementKey ? { ...entry, ...patch } : entry,
-    )
+    const existingRequirements = application.requirements ?? []
+    const hasRequirement = existingRequirements.some((entry) => entry.key === requirementKey)
+    const requirements = hasRequirement
+      ? existingRequirements.map((entry) =>
+          entry.key === requirementKey ? { ...entry, ...patch } : entry,
+        )
+      : fallbackRequirement?.key === requirementKey
+        ? [...existingRequirements, { ...fallbackRequirement, ...patch }]
+        : existingRequirements
 
     return { ...application, requirements, updatedAt: new Date().toISOString() }
   })
@@ -83,18 +94,39 @@ function updateRequirement(applications, applicationId, requirementKey, patch) {
 export function appDataReducer(state, action) {
   switch (action.type) {
     case ACTIONS.HYDRATE:
+      if (
+        action.payload.sessionId !== state.sessionId
+        || action.payload.sessionGeneration !== state.sessionGeneration
+      ) {
+        return state
+      }
       return {
         ...state,
         status: 'ready',
         error: null,
         processes: action.payload.processes,
         applications: action.payload.applications,
-        documents: action.payload.documents,
-        profile: action.payload.profile,
+        documents: action.payload.documents.map(normalizeDocumentAssociations),
+        profile: state.profile
+          ? {
+              ...action.payload.profile,
+              ...state.profile,
+              preferences: {
+                ...action.payload.profile?.preferences,
+                ...state.profile.preferences,
+              },
+            }
+          : action.payload.profile,
         assistant: { ...state.assistant, messages: [WELCOME_MESSAGE] },
       }
 
     case ACTIONS.HYDRATE_FAILED:
+      if (
+        action.sessionId !== state.sessionId
+        || action.sessionGeneration !== state.sessionGeneration
+      ) {
+        return state
+      }
       return { ...state, status: 'error', error: action.payload }
 
     case ACTIONS.NOTIFICATIONS_LOADING:
@@ -143,6 +175,8 @@ export function appDataReducer(state, action) {
     case ACTIONS.AUTH_RESET:
       return {
         ...INITIAL_STATE,
+        sessionId: action.payload?.sessionId ?? null,
+        sessionGeneration: action.payload?.sessionGeneration ?? null,
         toast: state.toast?.message === LOGOUT_WARNING_MESSAGE ? state.toast : null,
       }
 
@@ -154,6 +188,7 @@ export function appDataReducer(state, action) {
           action.payload.applicationId,
           action.payload.requirementKey,
           action.payload.patch,
+          action.payload.requirement,
         ),
       }
 
@@ -167,14 +202,53 @@ export function appDataReducer(state, action) {
       }
 
     case ACTIONS.DOCUMENT_ADDED:
-      return { ...state, documents: [action.payload, ...state.documents] }
+      return {
+        ...state,
+        documents: [normalizeDocumentAssociations(action.payload), ...state.documents],
+      }
 
     case ACTIONS.DOCUMENT_PATCHED:
       return {
         ...state,
         documents: state.documents.map((document) =>
-          document.id === action.payload.id ? { ...document, ...action.payload.patch } : document,
+          document.id === action.payload.id
+            ? normalizeDocumentAssociations({ ...document, ...action.payload.patch })
+            : document,
         ),
+      }
+
+    case ACTIONS.DOCUMENT_APPLICATION_ADDED: {
+      const applicationId = action.payload.applicationId
+      return {
+        ...state,
+        documents: state.documents.map((document) => {
+          if (document.id !== action.payload.documentId) return document
+          const applicationIds = getDocumentApplicationIds(document)
+          if (applicationIds.includes(applicationId)) return document
+          return normalizeDocumentAssociations({
+            ...document,
+            applicationIds: [...applicationIds, applicationId],
+            applicationId: document.applicationId ?? applicationId,
+          })
+        }),
+      }
+    }
+
+    case ACTIONS.DOCUMENT_APPLICATION_REMOVED:
+      return {
+        ...state,
+        documents: state.documents.map((document) => {
+          if (document.id !== action.payload.documentId) return document
+          const applicationIds = getDocumentApplicationIds(document)
+            .filter((id) => id !== action.payload.applicationId)
+          return normalizeDocumentAssociations({
+            ...document,
+            applicationIds,
+            applicationId: applicationIds.includes(document.applicationId)
+              ? document.applicationId
+              : applicationIds[0] ?? null,
+          })
+        }),
       }
 
     case ACTIONS.DOCUMENT_REMOVED:
