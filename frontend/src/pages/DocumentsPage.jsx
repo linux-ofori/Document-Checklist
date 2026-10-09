@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { FolderOpen, Plus, Search, TriangleAlert, Upload } from 'lucide-react'
 import { AppLayout } from '../layouts/AppLayout'
 import { DocumentList, StatCard } from '../components/product'
@@ -33,6 +33,7 @@ export function DocumentsPage() {
     openUploadModal,
     openDocumentPreview,
     updateDocument,
+    detachDocumentFromApplication,
     removeDocument,
   } = useAppData()
 
@@ -41,6 +42,9 @@ export function DocumentsPage() {
   const [type, setType] = useState('all')
   const [isRemoveOpen, setIsRemoveOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [pendingDetach, setPendingDetach] = useState(null)
+  const [isDetaching, setIsDetaching] = useState(false)
+  const detachInFlightRef = useRef(false)
   const [isRenaming, setIsRenaming] = useState(false)
   const [pendingRename, setPendingRename] = useState(null)
   const [renameValue, setRenameValue] = useState('')
@@ -110,6 +114,23 @@ export function DocumentsPage() {
     await removeDocument(pendingDelete.id)
     setIsRemoveOpen(false)
     setPendingDelete(null)
+  }
+
+  const confirmDetach = async () => {
+    const { document, application } = pendingDetach ?? {}
+    if (!document?.id || !application?.id || detachInFlightRef.current) return
+
+    detachInFlightRef.current = true
+    setIsDetaching(true)
+    try {
+      await detachDocumentFromApplication(document.id, application.id)
+      setPendingDetach(null)
+    } catch {
+      // The provider reports the API error; keep the confirmation open to allow retry.
+    } finally {
+      detachInFlightRef.current = false
+      setIsDetaching(false)
+    }
   }
 
   return (
@@ -251,6 +272,10 @@ export function DocumentsPage() {
               onView={(document) => openDocumentPreview(document.id)}
               onRename={openRename}
               onRefreshExpiry={openExpiry}
+              onDetachApplication={(document, application) => {
+                if (!document?.id || !application?.id || detachInFlightRef.current) return
+                setPendingDetach({ document, application })
+              }}
               onRemove={(document) => {
                 setPendingDelete(document)
                 setIsRemoveOpen(true)
@@ -321,6 +346,48 @@ export function DocumentsPage() {
           hint="Clear this if the document never expires."
           data-autofocus
         />
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(pendingDetach)}
+        onClose={() => {
+          if (!isDetaching) setPendingDetach(null)
+        }}
+        title="Detach document from application?"
+        description={
+          pendingDetach
+            ? `${pendingDetach.document.name} will no longer be associated with ${pendingDetach.application.name}. The document will stay in your library and remain associated with any other applications.`
+            : undefined
+        }
+        size="sm"
+        closeOnEscape={!isDetaching}
+        closeOnOverlayClick={!isDetaching}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => setPendingDetach(null)}
+              disabled={isDetaching}
+            >
+              Keep association
+            </Button>
+            <Button
+              variant="danger"
+              size="md"
+              onClick={confirmDetach}
+              isLoading={isDetaching}
+              disabled={!pendingDetach?.document?.id || !pendingDetach?.application?.id}
+            >
+              Detach from application
+            </Button>
+          </>
+        }
+      >
+        <p className="ui-body">
+          If a checklist requirement in this application still references the document, unlink
+          that checklist item first. Detaching does not delete the document.
+        </p>
       </Modal>
 
       <Modal

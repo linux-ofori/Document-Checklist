@@ -664,6 +664,20 @@
   max-width: 200px;
 }
 
+.document-row__association-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.document-row__association {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+}
+
 .document-row__pill {
   display: inline-block;
   padding: 2px var(--space-2);

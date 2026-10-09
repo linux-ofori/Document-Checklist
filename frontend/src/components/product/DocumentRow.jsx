@@ -10,7 +10,7 @@ import {
   ScrollText,
   Trash2,
 } from 'lucide-react'
-import { Dropdown, IconButton, StatusBadge } from '../ui'
+import { Button, Dropdown, IconButton, StatusBadge } from '../ui'
 import { formatCalendarDate, formatFileSize, formatRelativeTime } from '../../utils/format'
 import { cn } from '../../utils/cn'
 
@@ -31,7 +31,14 @@ function DocumentGlyph({ document }) {
   return <Icon size={17} aria-hidden="true" />
 }
 
-export function DocumentRow({ document, onView, onRename, onRefreshExpiry, onRemove }) {
+export function DocumentRow({
+  document,
+  onView,
+  onRename,
+  onRefreshExpiry,
+  onRemove,
+  onDetachApplication,
+}) {
   return (
     <tr className="document-row">
       <td className="document-row__name">
@@ -58,8 +65,26 @@ export function DocumentRow({ document, onView, onRename, onRefreshExpiry, onRem
       <td className="document-row__type">{document.typeLabel}</td>
 
       <td className="document-row__application">
-        {document.applicationNames?.length > 0 ? (
-          <span className="document-row__pill">{document.applicationNames.join(', ')}</span>
+        {document.applications?.length > 0 ? (
+          <div className="document-row__association-list">
+            {document.applications.map((application) => (
+              <div className="document-row__association" key={application.id}>
+                <span className="document-row__pill" title={application.name}>
+                  {application.name}
+                </span>
+                {application.id ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Detach ${document.name} from ${application.name}`}
+                    onClick={() => onDetachApplication?.(document, application)}
+                  >
+                    Detach
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
         ) : document.applicationName && document.applicationName !== 'Not linked' ? (
           <span className="document-row__pill">{document.applicationName}</span>
         ) : (
