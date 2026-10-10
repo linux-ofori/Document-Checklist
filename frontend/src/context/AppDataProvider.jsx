@@ -470,15 +470,20 @@ export function AppDataProvider({ children }) {
   )
 
   const startApplication = useCallback(async (processId) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return null
+
     try {
       const application = await createApplicationRecord({ processId })
+      if (!isCurrentSession(requestSessionGeneration)) return null
       dispatch({ type: ACTIONS.APPLICATION_ADDED, payload: application })
       return application
     } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return null
       showToast(error instanceof Error ? error.message : 'We could not create the application.', 'warning')
       throw error
     }
-  }, [showToast])
+  }, [isCurrentSession, showToast])
 
   const updateApplication = useCallback((id, patch) => {
     dispatch({ type: ACTIONS.APPLICATION_PATCHED, payload: { id, patch } })
@@ -593,10 +598,14 @@ export function AppDataProvider({ children }) {
   )
 
   const replaceDocument = useCallback(async (documentId, file) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return null
+
     dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: true } })
 
     try {
       const updatedDocument = await replaceDocumentFile(documentId, file)
+      if (!isCurrentSession(requestSessionGeneration)) return null
       if (updatedDocument?.id !== documentId) {
         throw new Error('The replacement response did not match the existing document.')
       }
@@ -608,6 +617,7 @@ export function AppDataProvider({ children }) {
       showToast('Document file replaced successfully.')
       return updatedDocument
     } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return null
       let message
       if (error?.status === 400) {
         message = 'Please check the selected file and try again.'
@@ -627,23 +637,31 @@ export function AppDataProvider({ children }) {
       showToast(message, 'warning')
       throw error
     } finally {
-      dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: false } })
+      if (isCurrentSession(requestSessionGeneration)) {
+        dispatch({ type: ACTIONS.UPLOAD_STATE, payload: { isSubmitting: false } })
+      }
     }
-  }, [showToast])
+  }, [isCurrentSession, showToast])
 
   const updateDocument = useCallback(async (documentId, patch, message) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return null
+
     try {
       const updatedDocument = await updateDocumentRecord(documentId, patch)
+      if (!isCurrentSession(requestSessionGeneration)) return null
       dispatch({
         type: ACTIONS.DOCUMENT_PATCHED,
         payload: { id: documentId, patch: updatedDocument },
       })
       if (message) showToast(message)
+      return true
     } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return null
       showToast(error instanceof Error ? error.message : 'We could not update the document.', 'warning')
       throw error
     }
-  }, [showToast])
+  }, [isCurrentSession, showToast])
 
   const associateDocumentWithApplication = useCallback(async (
     documentId,
@@ -734,10 +752,15 @@ export function AppDataProvider({ children }) {
 
   const removeDocument = useCallback(
     async (documentId) => {
+      const requestSessionGeneration = authSessionRef.current.generation
+      if (!isCurrentSession(requestSessionGeneration)) return false
+
       const document = state.documents.find((entry) => entry.id === documentId)
       try {
         await removeDocumentRecord(documentId)
+        if (!isCurrentSession(requestSessionGeneration)) return false
       } catch (error) {
+        if (!isCurrentSession(requestSessionGeneration)) return false
         showToast(error instanceof Error ? error.message : 'We could not delete the document.', 'warning')
         throw error
       }
@@ -759,8 +782,9 @@ export function AppDataProvider({ children }) {
 
       dispatch({ type: ACTIONS.DOCUMENT_REMOVED, payload: documentId })
       showToast(`${document?.name ?? 'Document'} removed.`, 'neutral')
+      return true
     },
-    [state.applications, state.documents, showToast],
+    [isCurrentSession, state.applications, state.documents, showToast],
   )
 
   const markNotificationRead = useCallback(async (notificationId) => {
@@ -803,24 +827,33 @@ export function AppDataProvider({ children }) {
 
   const updateProfile = useCallback(
     async (values) => {
+      const requestSessionGeneration = authSessionRef.current.generation
+      if (!isCurrentSession(requestSessionGeneration)) return null
+
       try {
         const updatedUser = await saveProfile(values)
+        if (!isCurrentSession(requestSessionGeneration)) return null
         const profile = normalizeProfile(updatedUser, state.profile)
         updateUser(updatedUser)
         dispatch({ type: ACTIONS.PROFILE_PATCHED, payload: profile })
         showToast('Your profile has been updated.')
         return profile
       } catch (error) {
+        if (!isCurrentSession(requestSessionGeneration)) return null
         throw new Error(safeAccountError(error, 'profile'))
       }
     },
-    [showToast, state.profile, updateUser],
+    [isCurrentSession, showToast, state.profile, updateUser],
   )
 
   const changePassword = useCallback(
     async ({ currentPassword, newPassword }) => {
+      const requestSessionGeneration = authSessionRef.current.generation
+      if (!isCurrentSession(requestSessionGeneration)) return false
+
       try {
         const result = await savePassword({ currentPassword, newPassword })
+        if (!isCurrentSession(requestSessionGeneration)) return false
         if (!storeAuthToken(result?.token)) {
           signOut()
           const error = new Error('Your password changed, but the new session could not be saved. Please sign in again.')
@@ -832,16 +865,23 @@ export function AppDataProvider({ children }) {
         showToast('Your password has been changed.')
         return true
       } catch (error) {
+        if (!isCurrentSession(requestSessionGeneration) && error?.code !== 'TOKEN_STORAGE_FAILED') {
+          return false
+        }
         throw new Error(safeAccountError(error, 'password'))
       }
     },
-    [showToast, signOut, updateUser],
+    [isCurrentSession, showToast, signOut, updateUser],
   )
 
   const updatePreferences = useCallback(
     async (preferences) => {
+      const requestSessionGeneration = authSessionRef.current.generation
+      if (!isCurrentSession(requestSessionGeneration)) return null
+
       try {
         const updatedUser = await savePreferences(preferences)
+        if (!isCurrentSession(requestSessionGeneration)) return null
         const profile = normalizeProfile(updatedUser, state.profile)
         updateUser(updatedUser)
         dispatch({
@@ -850,10 +890,11 @@ export function AppDataProvider({ children }) {
         })
         return profile.preferences
       } catch (error) {
+        if (!isCurrentSession(requestSessionGeneration)) return null
         throw new Error(safeAccountError(error, 'preferences'))
       }
     },
-    [state.profile, updateUser],
+    [isCurrentSession, state.profile, updateUser],
   )
 
   const openAssistant = useCallback(() => {

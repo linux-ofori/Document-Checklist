@@ -85,7 +85,8 @@ export function DocumentsPage() {
     const name = renameValue.trim()
     if (!name || !pendingRename) return
 
-    await updateDocument(pendingRename.id, { name }, `Renamed to ${name}.`)
+    const updated = await updateDocument(pendingRename.id, { name }, `Renamed to ${name}.`)
+    if (!updated) return
     setIsRenaming(false)
     setPendingRename(null)
   }
@@ -100,18 +101,20 @@ export function DocumentsPage() {
     if (!pendingExpiry) return
 
     const expiresAt = expiryValue ? new Date(expiryValue).toISOString() : null
-    await updateDocument(
+    const updated = await updateDocument(
       pendingExpiry.id,
       { expiresAt },
       expiryValue ? 'Expiry date updated. Reminders rescheduled.' : 'Expiry date removed.',
     )
+    if (!updated) return
     setIsExpiring(false)
     setPendingExpiry(null)
   }
 
   const confirmRemove = async () => {
     if (!pendingDelete) return
-    await removeDocument(pendingDelete.id)
+    const removed = await removeDocument(pendingDelete.id)
+    if (!removed) return
     setIsRemoveOpen(false)
     setPendingDelete(null)
   }

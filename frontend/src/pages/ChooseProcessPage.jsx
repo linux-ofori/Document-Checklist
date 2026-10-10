@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ArrowRight, CircleHelp, Search } from 'lucide-react'
 import { AppLayout } from '../layouts/AppLayout'
 import { ProcessCard } from '../components/product'
@@ -26,6 +26,7 @@ export function ChooseProcessPage() {
   const [category, setCategory] = useState('all')
   const [startingId, setStartingId] = useState(null)
   const [error, setError] = useState('')
+  const startRequestIdRef = useRef(0)
   const debouncedQuery = useDebouncedValue(query, 200)
 
   const visibleProcesses = useMemo(() => {
@@ -44,16 +45,18 @@ export function ChooseProcessPage() {
   }, [processes, debouncedQuery, category])
 
   const handleStart = async (process) => {
+    const requestId = ++startRequestIdRef.current
     setStartingId(process.id)
     setError('')
 
     try {
       const application = await startApplication(process.id)
+      if (!application) return
       navigate(toRoutePath('application', { id: application.id }))
     } catch {
       setError('We could not start that application. Please try again.')
     } finally {
-      setStartingId(null)
+      if (startRequestIdRef.current === requestId) setStartingId(null)
     }
   }
 

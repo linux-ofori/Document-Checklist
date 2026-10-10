@@ -454,8 +454,8 @@ function UploadForm({
     setSubmissionError('')
     try {
       if (isReplacement) {
-        await replaceDocument(replacementTarget.id, values.file)
-        closeUploadModal()
+        const replacedDocument = await replaceDocument(replacementTarget.id, values.file)
+        if (replacedDocument) closeUploadModal()
       } else {
         await submitUpload(values)
       }

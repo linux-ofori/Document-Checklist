@@ -24,8 +24,10 @@ function PreferencesForm({ profile }) {
     setIsSavingPreferences(true)
     setPreferenceError('')
     try {
-      await updatePreferences(preferences)
-      showToast('Your notification preferences have been saved.')
+      const updatedPreferences = await updatePreferences(preferences)
+      if (updatedPreferences) {
+        showToast('Your notification preferences have been saved.')
+      }
     } catch (error) {
       setPreferences({ ...profile.preferences })
       setPreferenceError(error instanceof Error ? error.message : 'We could not save your preferences. Please try again.')
@@ -130,10 +132,11 @@ export function SettingsPage() {
 
     setIsChangingPassword(true)
     try {
-      await changePassword({
+      const changed = await changePassword({
         currentPassword: passwordValues.currentPassword,
         newPassword: passwordValues.newPassword,
       })
+      if (!changed) return
       setPasswordValues(EMPTY_PASSWORD_VALUES)
       setPasswordErrors({})
     } catch (error) {
