@@ -743,7 +743,7 @@ export function AppDataProvider({ children }) {
     } catch (error) {
       if (!isCurrentSession(requestSessionGeneration)) return
       const message = error?.status === 409
-        ? 'Unlink or replace this document on the application checklist before detaching it.'
+        ? 'Unlink this document from the checklist item first, then retry detaching it.'
         : 'We could not detach this document from the application. Please try again.'
       showToast(message, 'warning')
       throw error
