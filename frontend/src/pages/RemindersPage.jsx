@@ -5,7 +5,7 @@ import { NotificationCard, StatCard } from '../components/product'
 import { Alert, Button, Card, EmptyState, LoadingState, TabGroup } from '../components/ui'
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
-import { NOTIFICATION_KIND_LABELS } from '../data'
+import { isExpiryNotification, NOTIFICATION_KIND_LABELS } from '../data'
 import { ROUTES, toRoutePath } from '../utils/routes'
 import { pluralize } from '../utils/format'
 
@@ -32,19 +32,23 @@ export function RemindersPage() {
     openDocumentPreview,
   } = useAppData()
   const hasNotifications = notificationsStatus === 'ready'
+  const expiryNotifications = useMemo(
+    () => notificationViews.filter(isExpiryNotification),
+    [notificationViews],
+  )
 
   const counts = useMemo(
     () => ({
       total: notificationViews.length,
       unread: notificationViews.filter((notification) => !notification.isRead).length,
       overdue: notificationViews.filter((notification) => notification.isOverdue).length,
-      expiry: notificationViews.filter((notification) => notification.kind === 'expiry').length,
+      expiry: expiryNotifications.length,
       missing: notificationViews.filter((notification) => notification.kind === 'missing-document')
         .length,
       application: notificationViews.filter((notification) => notification.kind === 'application')
         .length,
     }),
-    [notificationViews],
+    [expiryNotifications, notificationViews],
   )
 
   const renderList = (items, emptyTitle, emptyDescription) => {
@@ -88,7 +92,10 @@ export function RemindersPage() {
     )
   }
 
-  const byKind = (kind) => notificationViews.filter((item) => item.kind === kind)
+  const byKind = (kind) =>
+    kind === 'expiry'
+      ? expiryNotifications
+      : notificationViews.filter((item) => item.kind === kind)
   const unread = notificationViews.filter((item) => !item.isRead)
 
   return (

@@ -29,7 +29,7 @@ export const PREFERENCE_OPTIONS = [
   {
     id: 'documentExpiry',
     label: 'Document expiry reminders',
-    description: 'Warn me 60, 30 and 7 days before a document expires.',
+    description: 'Warn me 7 days and 1 day before a document expires.',
   },
   {
     id: 'applicationUpdates',

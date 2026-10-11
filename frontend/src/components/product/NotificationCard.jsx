@@ -10,6 +10,7 @@ import {
 import { StatusBadge } from '../ui'
 import { formatCountdown, formatRelativeTime } from '../../utils/format'
 import { cn } from '../../utils/cn'
+import { isExpiryNotification } from '../../data/notifications'
 
 const KIND_META = {
   expiry: { icon: Clock, label: 'Expiry' },
@@ -32,8 +33,13 @@ export function NotificationCard({
   onOpenDocument,
   actionLabel = 'View checklist',
 }) {
-  const kind = KIND_META[notification.kind] ?? KIND_META.system
-  const SeverityIcon = SEVERITY_ICONS[notification.severity] ?? Bell
+  const isExpiry = isExpiryNotification(notification)
+  const kind = isExpiry
+    ? KIND_META.expiry
+    : KIND_META[notification.kind] ?? KIND_META.system
+  const SeverityIcon = isExpiry
+    ? KIND_META.expiry.icon
+    : SEVERITY_ICONS[notification.severity] ?? Bell
 
   return (
     <article

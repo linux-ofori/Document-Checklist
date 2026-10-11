@@ -11,7 +11,12 @@ export {
   MAX_UPLOAD_SIZE_MB,
   getDocumentTypeLabel,
 } from './documentTypes'
-export { NOTIFICATIONS, NOTIFICATION_KINDS, NOTIFICATION_KIND_LABELS } from './notifications'
+export {
+  NOTIFICATIONS,
+  NOTIFICATION_KINDS,
+  NOTIFICATION_KIND_LABELS,
+  isExpiryNotification,
+} from './notifications'
 export { PROFILE, PREFERENCE_OPTIONS } from './profile'
 export { ASSISTANT_SUGGESTIONS, ASSISTANT_ANSWERS, findAssistantAnswer } from './assistant'
 export {

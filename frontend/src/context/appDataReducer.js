@@ -20,6 +20,7 @@ export const ACTIONS = {
   NOTIFICATIONS_LOADED: 'NOTIFICATIONS_LOADED',
   NOTIFICATIONS_FAILED: 'NOTIFICATIONS_FAILED',
   NOTIFICATION_UPSERTED: 'NOTIFICATION_UPSERTED',
+  NOTIFICATION_READ_UPDATED: 'NOTIFICATION_READ_UPDATED',
   NOTIFICATIONS_READ_ALL: 'NOTIFICATIONS_READ_ALL',
   PROFILE_PATCHED: 'PROFILE_PATCHED',
   UPLOAD_OPENED: 'UPLOAD_OPENED',
@@ -49,6 +50,7 @@ export const INITIAL_STATE = {
   notificationsRefreshing: false,
   notificationVersion: 0,
   notificationMutationVersions: {},
+  notificationReadMutationVersions: {},
   profile: null,
   upload: { isOpen: false, prefill: null, isSubmitting: false },
   assistant: { isOpen: false, isThinking: false, messages: [] },
@@ -152,12 +154,28 @@ export function appDataReducer(state, action) {
           (notification) => changedById.get(notification.id) ?? notification,
         )
         locallyChanged.forEach((notification) => {
-          if (!serverIds.has(notification.id)) notifications.push(notification)
+          const isReadMutationAfterSnapshot =
+            (state.notificationReadMutationVersions[notification.id] ?? 0)
+            > action.payload.notificationVersion
+          if (!serverIds.has(notification.id) && !isReadMutationAfterSnapshot) {
+            notifications.push(notification)
+          }
         })
+        const notificationIds = new Set(notifications.map((notification) => notification.id))
+        const notificationMutationVersions = Object.fromEntries(
+          Object.entries(state.notificationMutationVersions)
+            .filter(([id]) => notificationIds.has(id)),
+        )
+        const notificationReadMutationVersions = Object.fromEntries(
+          Object.entries(state.notificationReadMutationVersions)
+            .filter(([id]) => notificationIds.has(id)),
+        )
 
         return {
           ...state,
           notifications,
+          notificationMutationVersions,
+          notificationReadMutationVersions,
           notificationsStatus: 'ready',
           notificationsError: null,
           notificationsRefreshing: false,
@@ -268,12 +286,39 @@ export function appDataReducer(state, action) {
         notifications[existingIndex] = action.payload
       }
       const notificationVersion = state.notificationVersion + 1
+      const notificationReadMutationVersions = { ...state.notificationReadMutationVersions }
+      delete notificationReadMutationVersions[action.payload.id]
       return {
         ...state,
         notifications,
         notificationVersion,
         notificationMutationVersions: {
           ...state.notificationMutationVersions,
+          [action.payload.id]: notificationVersion,
+        },
+        notificationReadMutationVersions,
+      }
+    }
+
+    case ACTIONS.NOTIFICATION_READ_UPDATED: {
+      const existingIndex = state.notifications.findIndex(
+        (notification) => notification.id === action.payload.id,
+      )
+      if (existingIndex === -1) return state
+
+      const notifications = [...state.notifications]
+      notifications[existingIndex] = action.payload
+      const notificationVersion = state.notificationVersion + 1
+      return {
+        ...state,
+        notifications,
+        notificationVersion,
+        notificationMutationVersions: {
+          ...state.notificationMutationVersions,
+          [action.payload.id]: notificationVersion,
+        },
+        notificationReadMutationVersions: {
+          ...state.notificationReadMutationVersions,
           [action.payload.id]: notificationVersion,
         },
       }
@@ -291,14 +336,17 @@ export function appDataReducer(state, action) {
         return notification
       })
       const notificationMutationVersions = { ...state.notificationMutationVersions }
+      const notificationReadMutationVersions = { ...state.notificationReadMutationVersions }
       changedIds.forEach((id) => {
         notificationMutationVersions[id] = notificationVersion
+        notificationReadMutationVersions[id] = notificationVersion
       })
       return {
         ...state,
         notifications,
         notificationVersion: changedIds.length > 0 ? notificationVersion : state.notificationVersion,
         notificationMutationVersions,
+        notificationReadMutationVersions,
       }
     }
 
