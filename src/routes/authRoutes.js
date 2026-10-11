@@ -1,6 +1,5 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
@@ -9,6 +8,7 @@ const { deleteDocumentsByOwnerId, findDocumentsByOwnerId } = require('../models/
 const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
 const { deleteAllNotifications } = require('../services/notificationService');
 const { completeAccountReminderCleanup } = require('../services/expiryReminderCleanup');
+const { createAuthToken } = require('../services/authToken');
 const {
   createUser,
   changeUserPasswordById,
@@ -244,17 +244,6 @@ function validatePasswordChange(body) {
   return { errors, currentPassword, newPassword };
 }
 
-function createToken(user) {
-  return jwt.sign(
-    { tokenVersion: Number.isSafeInteger(user.tokenVersion) ? user.tokenVersion : 0 },
-    process.env.JWT_SECRET,
-    {
-      subject: String(user._id),
-      expiresIn: process.env.JWT_EXPIRES_IN || '1d'
-    }
-  );
-}
-
 async function completeAccountDeletion(userId) {
   const user = await findUserById(userId);
   if (!user) {
@@ -309,7 +298,7 @@ router.post('/register', registrationRateLimit, async (request, response, next) 
 
     return response.status(201).json({
       user: toPublicUser(user),
-      token: createToken(user)
+      token: createAuthToken(user)
     });
   } catch (error) {
     if (error.errorType === 'uniqueViolated') {
@@ -329,7 +318,7 @@ router.post('/login', loginRateLimit, async (request, response, next) => {
     }
 
     const user = await findUserByEmail(credentials.email);
-    const passwordMatches = user && !user.deleting
+    const passwordMatches = user && !user.deleting && typeof user.password === 'string'
       && await bcrypt.compare(credentials.password, user.password);
 
     if (!passwordMatches) {
@@ -338,7 +327,7 @@ router.post('/login', loginRateLimit, async (request, response, next) => {
 
     return response.json({
       user: toPublicUser(user),
-      token: createToken(user)
+      token: createAuthToken(user)
     });
   } catch (error) {
     return next(error);
@@ -351,7 +340,13 @@ router.get('/me', requireAuth, (request, response) => {
 
 router.post('/logout', requireAuth, async (request, response, next) => {
   try {
-    const user = await incrementUserTokenVersionById(request.user.id);
+    const user = await withAccountOperationLock(request.user.id, async () => {
+      const currentUser = await findUserById(request.user.id);
+      if (!currentUser || currentUser.deleting) {
+        return null;
+      }
+      return incrementUserTokenVersionById(request.user.id);
+    });
     if (!user) {
       return response.status(404).json({ error: 'The authenticated user no longer exists.' });
     }
@@ -417,23 +412,32 @@ router.post('/change-password', passwordChangeRateLimit, requireAuth, async (req
     }
 
     const user = await findUserById(request.user.id);
-    if (!user || user.deleting || !await bcrypt.compare(passwordChange.currentPassword, user.password)) {
+    if (!user || user.deleting || typeof user.password !== 'string'
+        || !await bcrypt.compare(passwordChange.currentPassword, user.password)) {
       return response.status(401).json({ error: 'Current password is incorrect or account is unavailable.' });
     }
 
     const newPasswordHash = await bcrypt.hash(passwordChange.newPassword, 12);
-    const updatedUser = await changeUserPasswordById(
-      request.user.id,
-      user.password,
-      newPasswordHash
-    );
+    const updatedUser = await withAccountOperationLock(request.user.id, async () => {
+      const currentUser = await findUserById(request.user.id);
+      const currentTokenVersion = currentUser && Number.isSafeInteger(currentUser.tokenVersion)
+        ? currentUser.tokenVersion
+        : 0;
+      if (!currentUser
+          || currentUser.deleting
+          || currentUser.password !== user.password
+          || currentTokenVersion !== request.authTokenVersion) {
+        return null;
+      }
+      return changeUserPasswordById(request.user.id, user.password, newPasswordHash);
+    });
     if (!updatedUser) {
       return response.status(401).json({ error: 'Current password is incorrect or account is unavailable.' });
     }
 
     return response.json({
       user: toPublicUser(updatedUser),
-      token: createToken(updatedUser)
+      token: createAuthToken(updatedUser)
     });
   } catch (error) {
     return next(error);

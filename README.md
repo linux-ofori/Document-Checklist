@@ -25,7 +25,7 @@ The API listens on `http://localhost:3000` by default. Use `npm run dev` for Nod
 
 In production, expose the API only through an HTTPS-terminating reverse proxy and set `NODE_ENV=production` and `TRUSTED_PROXY_IPS` to the proxy's exact IP addresses or narrow CIDRs. The application trusts forwarded protocol information only from those configured addresses and rejects requests that do not arrive as HTTPS through a trusted proxy. Do not use broad proxy ranges or trust arbitrary forwarded headers. Local development does not require HTTPS.
 
-The frontend origin allowed by CORS is configured with `CORS_ALLOWED_ORIGINS`, a comma-separated list of exact origins (scheme, hostname, and optional port only; no path, credentials, wildcard, query, or fragment). Outside production, if unset, it defaults to `http://localhost:5173`. In production it is required, and every configured origin must use HTTPS. For local development, use `CORS_ALLOWED_ORIGINS=http://localhost:5173`. For production, configure the deployment environment with the real frontend origin, for example `CORS_ALLOWED_ORIGINS=https://frontend.example.com`; for multiple frontends, use `CORS_ALLOWED_ORIGINS=https://frontend.example.com,https://admin.example.com`. Set this in the hosting platform's environment configuration rather than committing deployment-specific origins. CORS credentials are not enabled.
+The frontend origin allowed by CORS is configured with `CORS_ALLOWED_ORIGINS`, a comma-separated list of exact origins (scheme, hostname, and optional port only; no path, credentials, wildcard, query, or fragment). Outside production, if unset, it defaults to `http://localhost:5173`. In production it is required, and every configured origin must use HTTPS. For local development, use `CORS_ALLOWED_ORIGINS=http://localhost:5173`. For production, configure the deployment environment with the real frontend origin, for example `CORS_ALLOWED_ORIGINS=https://frontend.example.com`; for multiple frontends, use `CORS_ALLOWED_ORIGINS=https://frontend.example.com,https://admin.example.com`. Set this in the hosting platform's environment configuration rather than committing deployment-specific origins. CORS allows credentials for the short-lived HttpOnly Google OAuth browser-binding cookie; browser clients must use credentialed requests when starting authorization. It does not use cookies as API authentication.
 
 The file-backed NeDB databases are intended for one Node.js process using a private persistent data directory; do not share the same database files between clustered processes or instances. On POSIX systems, newly created database files are restricted to the service owner. On Windows, protect the database directory using the service account's inherited filesystem ACLs.
 
@@ -92,6 +92,20 @@ The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There
 Profile updates must include at least one of `name` or `email`. Document updates must include at least one editable document field. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs, owner fields, timestamps, upload metadata, and storage information. Registration and login validate their named fields but do not reject additional fields.
 
 ### Authentication endpoints
+
+#### Google OAuth
+
+Google sign-in is disabled by default. Enable it with `GOOGLE_OAUTH_ENABLED=true` and configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and `FRONTEND_AUTH_CALLBACK_URL`. The backend callback must be the fixed `/api/auth/google/callback` URL registered with Google. Local development may use loopback HTTP URLs; production callbacks must use HTTPS. The backend sends only a short-lived, single-use exchange ticket in the frontend URL fragment; access tokens and Google tokens are never put in a URL.
+
+The flow uses three endpoints:
+
+- `POST /api/auth/google/authorization` with `{ "intent": "login" }` starts sign-in and returns `{ "authorizationUrl": "..." }`. Send this credentialed request from a browser so the HttpOnly browser-binding cookie can be set.
+- `GET /api/auth/google/callback` is the fixed provider redirect. After successful verification, it redirects to the configured frontend callback with a short-lived ticket in the fragment; failures use a generic `google_sign_in_failed` fragment value.
+- `POST /api/auth/google/exchange` with `{ "ticket": "..." }` consumes the ticket and returns the same `{ "user": ..., "token": "..." }` session shape as local login. Expired or previously consumed tickets return `410 Gone`.
+
+To explicitly link Google to a local-password account, call the authorization endpoint with a valid bearer token and `{ "intent": "link", "currentPassword": "..." }`. Linking requires the current password, the authenticated session must remain valid through the flow, and an identity already linked elsewhere is rejected. A matching email address never links accounts automatically. Google-only users have no local password and cannot use local-password login or this password-confirmed linking flow. Email verification, password recovery, unlinking, and adding a local password are outside this foundation.
+
+OAuth transactions and exchange tickets are held in memory. Run one backend process only; pending transactions and tickets are lost on restart and are not shared across multiple instances.
 
 #### `POST /api/auth/register`
 

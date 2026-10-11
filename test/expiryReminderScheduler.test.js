@@ -923,6 +923,7 @@ test('starts the scheduler only after cleanup and deletion recovery, then listen
     signalDocumentRecoveryStarted = resolve;
   });
   const startup = startServerAfterRecovery({
+    initializeUserDatabase: async () => events.push('users-initialized'),
     initializeExpiryRemindersDatabase: async () => events.push('ledger-initialized'),
     initializeExpiryReminderCleanupDatabase: async () => events.push('cleanup-journal-initialized'),
     recoverPendingExpiryReminderCleanup: async () => events.push('cleanup-recovery'),
@@ -942,6 +943,7 @@ test('starts the scheduler only after cleanup and deletion recovery, then listen
 
   await documentRecoveryStarted;
   assert.deepEqual(events, [
+    'users-initialized',
     'ledger-initialized',
     'cleanup-journal-initialized',
     'cleanup-recovery',
@@ -950,6 +952,7 @@ test('starts the scheduler only after cleanup and deletion recovery, then listen
   releaseDocumentRecovery();
   assert.equal(await startup, 'server');
   assert.deepEqual(events, [
+    'users-initialized',
     'ledger-initialized',
     'cleanup-journal-initialized',
     'cleanup-recovery',
@@ -964,6 +967,7 @@ test('starts the scheduler only after cleanup and deletion recovery, then listen
 test('does not listen or start the scheduler when cleanup recovery fails', async () => {
   const events = [];
   await assert.rejects(startServerAfterRecovery({
+    initializeUserDatabase: async () => events.push('users-initialized'),
     initializeExpiryRemindersDatabase: async () => events.push('ledger-initialized'),
     initializeExpiryReminderCleanupDatabase: async () => events.push('journal-initialized'),
     recoverPendingExpiryReminderCleanup: async () => {
@@ -975,5 +979,28 @@ test('does not listen or start the scheduler when cleanup recovery fails', async
     startListening: async () => events.push('listening'),
     startReminderScheduler: async () => events.push('scheduler-started')
   }), /Simulated pending cleanup failure/);
-  assert.deepEqual(events, ['ledger-initialized', 'journal-initialized', 'cleanup-recovery']);
+  assert.deepEqual(events, [
+    'users-initialized',
+    'ledger-initialized',
+    'journal-initialized',
+    'cleanup-recovery'
+  ]);
+});
+
+test('does not listen or start recovery when user database index initialization fails', async () => {
+  const events = [];
+  await assert.rejects(startServerAfterRecovery({
+    initializeUserDatabase: async () => {
+      events.push('users-initialization');
+      throw new Error('Simulated user index initialization failure.');
+    },
+    initializeExpiryRemindersDatabase: async () => events.push('ledger-initialized'),
+    initializeExpiryReminderCleanupDatabase: async () => events.push('journal-initialized'),
+    recoverPendingExpiryReminderCleanup: async () => events.push('cleanup-recovery'),
+    recoverPendingDocumentDeletions: async () => events.push('document-recovery'),
+    recoverPendingAccountDeletions: async () => events.push('account-recovery'),
+    startListening: async () => events.push('listening'),
+    startReminderScheduler: async () => events.push('scheduler-started')
+  }), /Simulated user index initialization failure/);
+  assert.deepEqual(events, ['users-initialization']);
 });

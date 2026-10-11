@@ -1,4 +1,5 @@
 async function startServerAfterRecovery({
+  initializeUserDatabase,
   initializeExpiryRemindersDatabase,
   initializeExpiryReminderCleanupDatabase,
   recoverPendingExpiryReminderCleanup,
@@ -7,6 +8,7 @@ async function startServerAfterRecovery({
   startListening,
   startReminderScheduler
 }) {
+  await initializeUserDatabase();
   await initializeExpiryRemindersDatabase();
   await initializeExpiryReminderCleanupDatabase();
   await recoverPendingExpiryReminderCleanup();

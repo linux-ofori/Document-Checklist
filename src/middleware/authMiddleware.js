@@ -43,6 +43,8 @@ function createRequireAuth(allowDeletingAccount) {
     }
 
     request.user = toPublicUser(user);
+    request.authTokenVersion = tokenVersion;
+    request.authTokenExpiresAt = payload.exp;
     return next();
   };
 }

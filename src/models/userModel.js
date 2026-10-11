@@ -58,15 +58,59 @@ function createUser({ name, email, password, phone = null }) {
   });
 }
 
+function createGoogleUser({ name, email, googleSubject }) {
+  const timestamp = new Date().toISOString();
+  return new Promise((resolve, reject) => {
+    database.insert({
+      name,
+      email,
+      googleSubject,
+      phone: null,
+      preferences: { notifications: { ...DEFAULT_NOTIFICATION_PREFERENCES } },
+      tokenVersion: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }, (error, user) => error ? reject(error) : resolve(user));
+  });
+}
+
 function findUserByEmail(email) {
   return new Promise((resolve, reject) => {
     database.findOne({ email }, (error, user) => error ? reject(error) : resolve(user));
   });
 }
 
+function findUserByGoogleSubject(googleSubject) {
+  return new Promise((resolve, reject) => {
+    database.findOne({ googleSubject }, (error, user) => error ? reject(error) : resolve(user));
+  });
+}
+
 function findUserById(id) {
   return new Promise((resolve, reject) => {
     database.findOne({ _id: id }, (error, user) => error ? reject(error) : resolve(user));
+  });
+}
+
+function linkGoogleSubjectById(id, googleSubject) {
+  return new Promise((resolve, reject) => {
+    database.update(
+      { _id: id, deleting: { $ne: true }, googleSubject: { $exists: false } },
+      {
+        $set: {
+          googleSubject,
+          updatedAt: new Date().toISOString()
+        }
+      },
+      { returnUpdatedDocs: true },
+      (error, count, user) => {
+        if (error) {
+          return reject(error);
+        }
+
+        return resolve(count > 0 ? user : null);
+      }
+    );
   });
 }
 
@@ -173,12 +217,15 @@ function deleteUserById(id) {
 
 module.exports = {
   createUser,
+  createGoogleUser,
   changeUserPasswordById,
   deleteUserById,
   findUserByEmail,
+  findUserByGoogleSubject,
   findUserById,
   findUsersPendingDeletion,
   incrementUserTokenVersionById,
+  linkGoogleSubjectById,
   markUserDeletingById,
   updateUserById,
   toPublicUser

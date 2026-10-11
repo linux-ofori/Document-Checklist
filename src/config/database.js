@@ -8,10 +8,22 @@ const database = new Datastore({
   autoload: true
 });
 
-database.ensureIndex({ fieldName: 'email', unique: true }, (error) => {
-  if (error) {
-    throw error;
+let initializationPromise;
+
+function initializeUserDatabase() {
+  if (!initializationPromise) {
+    initializationPromise = (async () => {
+      await database.ensureIndexAsync({ fieldName: 'email', unique: true });
+      await database.ensureIndexAsync({
+        fieldName: 'googleSubject',
+        unique: true,
+        sparse: true
+      });
+    })();
   }
-});
+
+  return initializationPromise;
+}
 
 module.exports = database;
+module.exports.initializeUserDatabase = initializeUserDatabase;

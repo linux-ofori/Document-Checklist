@@ -14,6 +14,9 @@ const passwordAtBcryptLimit = 'a'.repeat(72);
 
 process.env.JWT_SECRET = testJwtSecret;
 process.env.NODE_ENV = 'test';
+process.env.GOOGLE_OAUTH_ENABLED = 'false';
+process.env.GOOGLE_OAUTH_RATE_LIMIT_MAX = '20';
+process.env.GOOGLE_OAUTH_RATE_LIMIT_WINDOW_MS = '900000';
 delete process.env.TRUSTED_PROXY_IPS;
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');

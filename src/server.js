@@ -12,6 +12,8 @@ if (jwtSecret.trim() === 'replace-this-with-a-random-secret-at-least-32-characte
 
 const { loadEmailConfig } = require('./config/email');
 loadEmailConfig();
+const { loadGoogleOAuthConfig } = require('./config/googleOAuth');
+loadGoogleOAuthConfig();
 
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '1d';
 try {
@@ -59,11 +61,14 @@ const cors = require('cors');
 const helmet = require('helmet');
 const { createCorsOptions } = require('./config/cors');
 const authRoutes = require('./routes/authRoutes');
+const googleOAuthRoutes = require('./routes/googleOAuthRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const { startServerAfterRecovery } = require('./services/serverStartup');
-require('./config/database');
+const { initializeUserDatabase } = require('./config/database');
+const userDatabaseInitialization = initializeUserDatabase();
+userDatabaseInitialization.catch(() => {});
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -81,7 +86,11 @@ if (process.env.NODE_ENV === 'production') {
 }
 app.use(cors(createCorsOptions()));
 app.use(express.json({ limit: '10kb' }));
+app.use((request, response, next) => {
+  userDatabaseInitialization.then(() => next()).catch(next);
+});
 app.use('/api/auth', authRoutes);
+app.use('/api/auth/google', googleOAuthRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/notifications', notificationRoutes);
@@ -122,6 +131,7 @@ if (require.main === module) {
   } = require('./services/expiryReminderCleanup');
   const expiryReminderScheduler = createExpiryReminderScheduler();
   startServerAfterRecovery({
+    initializeUserDatabase: () => userDatabaseInitialization,
     initializeExpiryRemindersDatabase,
     initializeExpiryReminderCleanupDatabase,
     recoverPendingExpiryReminderCleanup,

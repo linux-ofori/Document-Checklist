@@ -8,6 +8,9 @@ const testDataDirectory = fs.mkdtempSync(path.join(dataDirectory, '.test-securit
 
 process.env.JWT_SECRET = 'document-checklist-security-header-test-secret';
 process.env.NODE_ENV = 'production';
+process.env.GOOGLE_OAUTH_ENABLED = 'false';
+process.env.GOOGLE_OAUTH_RATE_LIMIT_MAX = '20';
+process.env.GOOGLE_OAUTH_RATE_LIMIT_WINDOW_MS = '900000';
 process.env.TRUSTED_PROXY_IPS = '127.0.0.1';
 process.env.CORS_ALLOWED_ORIGINS = 'https://frontend.example.test, https://admin.example.test';
 process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'users.db');
@@ -77,7 +80,7 @@ test('allows a configured production frontend CORS preflight with required metho
   assert.equal(response.headers.get('access-control-allow-origin'), 'https://frontend.example.test');
   assert.equal(response.headers.get('access-control-allow-methods'), 'GET,HEAD,POST,PUT,PATCH,DELETE');
   assert.equal(response.headers.get('access-control-allow-headers'), 'Content-Type,Authorization');
-  assert.equal(response.headers.get('access-control-allow-credentials'), null);
+  assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
   assertSecurityHeaders(response);
 });
 

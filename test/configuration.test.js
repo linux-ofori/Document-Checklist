@@ -6,6 +6,7 @@ const path = require('node:path');
 const { after, test } = require('node:test');
 const { prepareDatabaseFile } = require('../src/config/databasePaths');
 const { createCorsOptions } = require('../src/config/cors');
+const { loadGoogleOAuthConfig } = require('../src/config/googleOAuth');
 
 const temporaryWorkingDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), 'document-checklist-config-test-')
@@ -42,6 +43,9 @@ function isolatedEnvironment() {
   delete environment.TRUSTED_PROXY_IPS;
   delete environment.CORS_ALLOWED_ORIGINS;
   delete environment.JWT_EXPIRES_IN;
+  environment.GOOGLE_OAUTH_ENABLED = 'false';
+  environment.GOOGLE_OAUTH_RATE_LIMIT_MAX = '20';
+  environment.GOOGLE_OAUTH_RATE_LIMIT_WINDOW_MS = '900000';
   for (const variable of rateLimitEnvironmentVariables) {
     delete environment[variable];
   }
@@ -134,6 +138,60 @@ test('defaults to the local frontend origin outside production', () => {
   const options = createCorsOptions({ NODE_ENV: 'development' });
   options.origin('http://localhost:5173', (_error, allowedOrigin) => {
     assert.equal(allowedOrigin, 'http://localhost:5173');
+  });
+
+  test('disables Google OAuth unless explicitly enabled', () => {
+    assert.deepEqual(loadGoogleOAuthConfig({}), {
+      enabled: false,
+      clientId: null,
+      clientSecret: null,
+      redirectUri: null,
+      frontendCallbackUrl: null
+    });
+    assert.equal(loadGoogleOAuthConfig({ GOOGLE_OAUTH_ENABLED: 'false' }).enabled, false);
+  });
+
+  test('validates enabled Google OAuth credentials and fixed callback URLs', () => {
+    const validConfiguration = {
+      NODE_ENV: 'development',
+      GOOGLE_OAUTH_ENABLED: 'true',
+      GOOGLE_CLIENT_ID: 'google-client-id',
+      GOOGLE_CLIENT_SECRET: 'google-client-secret',
+      GOOGLE_REDIRECT_URI: 'http://localhost:3000/api/auth/google/callback',
+      FRONTEND_AUTH_CALLBACK_URL: 'http://localhost:5173/auth/google/callback'
+    };
+    const configuration = loadGoogleOAuthConfig(validConfiguration);
+    assert.equal(configuration.enabled, true);
+    assert.equal(configuration.redirectUri, validConfiguration.GOOGLE_REDIRECT_URI);
+    assert.equal(configuration.frontendCallbackUrl, validConfiguration.FRONTEND_AUTH_CALLBACK_URL);
+
+    for (const invalidConfiguration of [
+      { ...validConfiguration, GOOGLE_CLIENT_ID: '' },
+      { ...validConfiguration, GOOGLE_CLIENT_SECRET: '' },
+      { ...validConfiguration, GOOGLE_REDIRECT_URI: 'http://localhost:3000/callback' },
+      { ...validConfiguration, GOOGLE_REDIRECT_URI: 'https://example.test/api/auth/google/callback?next=x' },
+      { ...validConfiguration, FRONTEND_AUTH_CALLBACK_URL: 'http://example.test/callback' },
+      { ...validConfiguration, FRONTEND_AUTH_CALLBACK_URL: 'https://example.test/callback#fragment' },
+      { ...validConfiguration, CORS_ALLOWED_ORIGINS: 'http://localhost:5174' },
+      { ...validConfiguration, NODE_ENV: 'production' }
+    ]) {
+      assert.throws(() => loadGoogleOAuthConfig(invalidConfiguration));
+    }
+
+    assert.equal(loadGoogleOAuthConfig({
+      ...validConfiguration,
+      NODE_ENV: 'production',
+      GOOGLE_REDIRECT_URI: 'https://api.example.test/api/auth/google/callback',
+      FRONTEND_AUTH_CALLBACK_URL: 'https://frontend.example.test/auth/google/callback',
+      CORS_ALLOWED_ORIGINS: 'https://frontend.example.test'
+    }).enabled, true);
+  });
+
+  test('rejects malformed Google OAuth enablement values', () => {
+    assert.throws(
+      () => loadGoogleOAuthConfig({ GOOGLE_OAUTH_ENABLED: 'yes' }),
+      /GOOGLE_OAUTH_ENABLED must be either true or false/
+    );
   });
   options.origin('http://localhost:5174', (_error, allowedOrigin) => {
     assert.equal(allowedOrigin, false);
