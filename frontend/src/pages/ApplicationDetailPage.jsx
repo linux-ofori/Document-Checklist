@@ -20,12 +20,14 @@ import {
   KeyValueList,
   LoadingState,
   ProgressBar,
+  Select,
   StatusBadge,
   TabGroup,
 } from '../components/ui'
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { ROUTES } from '../utils/routes'
+import { APPLICATION_OUTCOME_LABELS } from '../utils/checklist'
 import {
   formatCalendarDate,
   formatCountdown,
@@ -35,6 +37,11 @@ import {
 } from '../utils/format'
 import { groupRequirementsByStatus } from '../utils/checklist'
 
+const OUTCOME_OPTIONS = Object.entries(APPLICATION_OUTCOME_LABELS).map(([value, label]) => ({
+  value,
+  label,
+}))
+
 export function ApplicationDetailPage({ applicationId }) {
   const { navigate } = useActiveRoute()
   const {
@@ -42,6 +49,8 @@ export function ApplicationDetailPage({ applicationId }) {
     getDocumentById,
     toggleRequirement,
     setRequirementStatus,
+    submitApplication,
+    updateApplicationDecision,
     showToast,
     openUploadModal,
     openDocumentPreview,
@@ -50,7 +59,12 @@ export function ApplicationDetailPage({ applicationId }) {
   } = useAppData()
 
   const [updatingKeys, setUpdatingKeys] = useState(() => new Set())
+  const [isSubmittingApplication, setIsSubmittingApplication] = useState(false)
+  const [isSavingDecision, setIsSavingDecision] = useState(false)
+  const [decisionDraftState, setDecisionDraftState] = useState(null)
   const pendingRequirementKeysRef = useRef(new Set())
+  const submissionInFlightRef = useRef(false)
+  const decisionInFlightRef = useRef(false)
 
   const application = getApplicationById(applicationId)
 
@@ -87,7 +101,46 @@ export function ApplicationDetailPage({ applicationId }) {
   }
 
   const { process, summary, requirements, documents } = application
-  const isComplete = summary.missing === 0 && summary.inProgress === 0
+  const decisionDraft = decisionDraftState?.applicationId === application.id
+    && decisionDraftState.baseOutcome === application.outcome
+    ? decisionDraftState.value
+    : application.outcome ?? ''
+  const isChecklistComplete = summary.missing === 0 && summary.inProgress === 0
+  const requiredItemsRemaining = requirements.filter(
+    (requirement) => requirement.isRequired && requirement.status !== 'completed',
+  ).length
+
+  const handleSubmitApplication = async () => {
+    if (submissionInFlightRef.current || !application.readyToSubmit) return
+    submissionInFlightRef.current = true
+    setIsSubmittingApplication(true)
+    try {
+      await submitApplication(application.id)
+    } catch {
+      // Provider surfaces the API error through the shared toast.
+    } finally {
+      submissionInFlightRef.current = false
+      setIsSubmittingApplication(false)
+    }
+  }
+
+  const handleSaveDecision = async () => {
+    if (
+      decisionInFlightRef.current
+      || !APPLICATION_OUTCOME_LABELS[decisionDraft]
+      || decisionDraft === application.outcome
+    ) return
+    decisionInFlightRef.current = true
+    setIsSavingDecision(true)
+    try {
+      await updateApplicationDecision(application.id, decisionDraft)
+    } catch {
+      // Provider surfaces the API error through the shared toast.
+    } finally {
+      decisionInFlightRef.current = false
+      setIsSavingDecision(false)
+    }
+  }
 
   const getRequirementUpdateKey = (requirementKey) =>
     JSON.stringify([application.id, requirementKey])
@@ -230,23 +283,122 @@ export function ApplicationDetailPage({ applicationId }) {
           <StatusBadge status={application.badgeStatus}>{application.statusLabel}</StatusBadge>
         </header>
 
-        {isComplete ? (
+        {application.status === 'completed' ? (
           <Alert
             tone="success"
             icon={<CircleCheck size={18} aria-hidden="true" />}
-            title="Everything on this checklist is done"
-            description="You can submit this application. We will keep an eye on any documents that expire while you wait."
+            title="Application completed"
+            description={application.outcome
+              ? `Owner-recorded institution outcome: ${APPLICATION_OUTCOME_LABELS[application.outcome] ?? application.outcome}.`
+              : 'The application process has been marked completed.'}
+          />
+        ) : application.status === 'submitted' ? (
+          <Alert
+            tone="info"
+            icon={<Clock size={18} aria-hidden="true" />}
+            title="Application submitted"
+            description={application.outcome === 'pending'
+              ? 'The owner-recorded outcome is pending; the application remains submitted.'
+              : 'This application has been submitted. Checklist completion does not change its submitted status.'}
+          />
+        ) : application.readyToSubmit === true ? (
+          <Alert
+            tone="success"
+            icon={<CircleCheck size={18} aria-hidden="true" />}
+            title="Required checklist items are complete"
+            description="You can submit when you are ready. Optional items and attached documents do not block submission."
+          />
+        ) : application.readyToSubmit === null ? (
+          <Alert
+            tone="info"
+            icon={<TriangleAlert size={18} aria-hidden="true" />}
+            title="Submission readiness could not be confirmed"
+            description="Refresh the application data before submitting. The checklist may not contain every required item."
           />
         ) : (
           <Alert
             tone="info"
-            icon={<Sparkles size={18} aria-hidden="true" />}
+            icon={<TriangleAlert size={18} aria-hidden="true" />}
             title={application.nextStep}
-            description={`${summary.completed} of ${summary.total} items complete. ${
+            description={`${requiredItemsRemaining} required ${
+              requiredItemsRemaining === 1 ? 'item remains' : 'items remain'
+            } incomplete. Progress includes all ${summary.total} checklist items. ${
               application.dueDate ? formatCountdown(application.dueDate) : 'No deadline set.'
             }`}
           />
         )}
+
+        {application.status === 'in-progress' ? (
+          <Card
+            title="Submit application"
+            description={application.readyToSubmit
+              ? 'Submission is allowed because all required checklist items are complete.'
+              : application.readyToSubmit === false
+                ? 'Complete the remaining required checklist items before submitting.'
+                : 'Readiness is unknown. Refresh the application data before submitting.'}
+            padding="compact"
+          >
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Upload size={16} aria-hidden="true" />}
+              isLoading={isSubmittingApplication}
+              disabled={!application.readyToSubmit || isSubmittingApplication}
+              onClick={handleSubmitApplication}
+            >
+              Submit application
+            </Button>
+          </Card>
+        ) : null}
+
+        {application.status === 'submitted' || application.status === 'completed' ? (
+          <Card
+            title="Institution outcome"
+            description="Record the outcome communicated to you by the institution. Saving here does not contact or verify with the institution."
+            padding="compact"
+          >
+            <p className="ui-body">
+              Current owner-recorded outcome:{' '}
+              <strong>
+                {application.outcome
+                  ? APPLICATION_OUTCOME_LABELS[application.outcome] ?? application.outcome
+                  : 'Not recorded'}
+              </strong>
+              {application.outcome === 'pending'
+                ? ' — the application remains submitted.'
+                : application.outcome === 'accepted' || application.outcome === 'rejected'
+                  ? ' — the application is completed.'
+                  : ''}
+            </p>
+            <div className="form-actions">
+              <Select
+                label="Institution outcome"
+                hint="Pending keeps the application submitted; accepted or rejected marks it completed."
+                value={decisionDraft}
+                onChange={(event) => setDecisionDraftState({
+                  applicationId: application.id,
+                  baseOutcome: application.outcome,
+                  value: event.target.value,
+                })}
+                options={OUTCOME_OPTIONS}
+                disabled={isSavingDecision}
+              />
+              <Button
+                variant="outline"
+                size="md"
+                isLoading={isSavingDecision}
+                disabled={
+                  isSavingDecision
+                  || !APPLICATION_OUTCOME_LABELS[decisionDraft]
+                  || decisionDraft === application.outcome
+                }
+                onClick={handleSaveDecision}
+              >
+                Save outcome
+              </Button>
+            </div>
+          </Card>
+        ) : null}
 
         <div className="dashboard-grid">
           <div className="page-section">
@@ -268,7 +420,7 @@ export function ApplicationDetailPage({ applicationId }) {
               <ProgressBar
                 value={application.progress}
                 label={`${application.progress}% complete`}
-                variant={isComplete ? 'success' : 'primary'}
+                variant={isChecklistComplete ? 'success' : 'primary'}
                 size="lg"
               />
 
@@ -427,7 +579,11 @@ export function ApplicationDetailPage({ applicationId }) {
                     <span className="mini-list__title">
                       {summary.completed} documents accepted
                     </span>
-                    <span className="mini-list__meta">Ready to submit</span>
+                    <span className="mini-list__meta">
+                      {application.readyToSubmit
+                        ? 'Required items ready to submit'
+                        : 'Required items outstanding'}
+                    </span>
                   </span>
                 </li>
 

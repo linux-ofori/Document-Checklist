@@ -1,6 +1,8 @@
 import { getDocumentTypeLabel, getProcessById, getRequirementTemplate } from '../data'
 import {
   APPLICATION_STATUS_LABELS,
+  APPLICATION_OUTCOME_LABELS,
+  CHECKLIST_STATUSES,
   CHECKLIST_STATUS_LABELS,
   DOCUMENT_STATUS_LABELS,
   applicationBadgeStatus,
@@ -23,14 +25,60 @@ export function buildRequirements(application) {
 
     return {
       ...item,
-      isRequired: item.isRequired ?? true,
-      description: item.description ?? '',
-      guidance: item.guidance ?? '',
+      ...override,
+      isRequired: typeof override?.isRequired === 'boolean'
+        ? override.isRequired
+        : item.isRequired ?? true,
+      description: override?.description ?? item.description ?? '',
+      guidance: override?.guidance ?? item.guidance ?? '',
       status: override?.status ?? 'missing',
       documentId: override?.documentId ?? null,
       completedAt: override?.completedAt ?? null,
     }
   })
+}
+
+function deriveFallbackReadiness(application, template, requirements) {
+  const sourceRequirements = application.requirements
+  if (
+    !getProcessById(application.processId)
+    || template.length === 0
+    || !Array.isArray(sourceRequirements)
+    || sourceRequirements.length !== template.length
+  ) {
+    return null
+  }
+
+  const templateByKey = new Map(template.map((item) => [item.key, item]))
+  const sourceKeys = new Set()
+  for (const requirement of sourceRequirements) {
+    const templateRequirement = templateByKey.get(requirement?.key)
+    if (
+      typeof requirement?.key !== 'string'
+      || !templateRequirement
+      || sourceKeys.has(requirement.key)
+      || (requirement.isRequired !== undefined && typeof requirement.isRequired !== 'boolean')
+      || (
+        typeof requirement.isRequired === 'boolean'
+        && requirement.isRequired !== templateRequirement.isRequired
+      )
+      || (requirement.status !== undefined && !CHECKLIST_STATUSES.includes(requirement.status))
+    ) {
+      return null
+    }
+    sourceKeys.add(requirement.key)
+  }
+
+  if (
+    sourceKeys.size !== templateByKey.size
+    || template.some((item) => typeof item.isRequired !== 'boolean')
+  ) {
+    return null
+  }
+
+  return requirements
+    .filter((item) => item.isRequired)
+    .every((item) => item.status === 'completed')
 }
 
 export function buildApplicationView(application, documents = []) {
@@ -44,15 +92,31 @@ export function buildApplicationView(application, documents = []) {
     getDocumentApplicationIds(document).includes(application.id),
   )
 
-  const checklistComplete = summary.total > 0 && summary.missing === 0 && summary.inProgress === 0
-  const status = application.status === 'submitted' ? 'submitted' : checklistComplete ? 'completed' : 'in-progress'
+  const status = ['in-progress', 'submitted', 'completed'].includes(application.status)
+    ? application.status
+    : 'in-progress'
+  const readyToSubmit = typeof application.readyToSubmit === 'boolean'
+    ? application.readyToSubmit
+    : deriveFallbackReadiness(application, getRequirementTemplate(application.processId), requirements)
 
   const nextRequired = requirements.find((item) => item.isRequired && item.status !== 'completed') ?? null
-  const nextStep = checklistComplete
-    ? 'Everything is complete. You can submit this application.'
-    : (nextRequired
-      ? `Add ${nextRequired.name.toLowerCase()} to keep this application moving.`
-      : (application.nextStep ?? 'Finish the optional items when you are ready.'))
+  const nextStep = status === 'completed'
+    ? application.outcome === 'accepted'
+      ? 'Application completed with an accepted outcome.'
+      : application.outcome === 'rejected'
+        ? 'Application completed with a rejected outcome.'
+        : 'Application process completed.'
+    : status === 'submitted'
+      ? application.outcome === 'pending'
+        ? 'Application submitted and awaiting an outcome.'
+        : 'Application submitted.'
+      : readyToSubmit === null
+        ? 'Submission readiness could not be confirmed from the available checklist data.'
+        : readyToSubmit
+          ? 'Required checklist items are complete. You can submit this application.'
+          : (nextRequired
+            ? `Add ${nextRequired.name.toLowerCase()} to keep this application moving.`
+            : (application.nextStep ?? 'Finish the optional items when you are ready.'))
 
   return {
     ...application,
@@ -61,6 +125,8 @@ export function buildApplicationView(application, documents = []) {
     summary,
     progress,
     status,
+    readyToSubmit,
+    outcomeLabel: APPLICATION_OUTCOME_LABELS[application.outcome] ?? null,
     statusLabel: APPLICATION_STATUS_LABELS[status] ?? 'In progress',
     badgeStatus: applicationBadgeStatus(status),
     documents: linkedDocuments,

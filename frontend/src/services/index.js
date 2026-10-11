@@ -14,7 +14,13 @@ export {
   fetchRequirementTemplates,
   createApplicationRecord,
 } from './processService'
-export { fetchApplications, fetchApplication, saveRequirementStatus } from './applicationService'
+export {
+  fetchApplications,
+  fetchApplication,
+  saveRequirementStatus,
+  submitApplication,
+  updateApplicationDecision,
+} from './applicationService'
 export {
   fetchDocuments,
   fetchDocument,

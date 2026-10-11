@@ -11,6 +11,7 @@ export const ACTIONS = {
   REQUIREMENT_UPDATED: 'REQUIREMENT_UPDATED',
   APPLICATION_ADDED: 'APPLICATION_ADDED',
   APPLICATION_PATCHED: 'APPLICATION_PATCHED',
+  APPLICATION_LIFECYCLE_UPDATED: 'APPLICATION_LIFECYCLE_UPDATED',
   DOCUMENT_ADDED: 'DOCUMENT_ADDED',
   DOCUMENT_PATCHED: 'DOCUMENT_PATCHED',
   DOCUMENT_REMOVED: 'DOCUMENT_REMOVED',
@@ -89,7 +90,42 @@ function updateRequirement(applications, applicationId, requirementKey, patch, f
         ? [...existingRequirements, { ...fallbackRequirement, ...patch }]
         : existingRequirements
 
-    return { ...application, requirements, updatedAt: new Date().toISOString() }
+    const updatedApplication = {
+      ...application,
+      requirements,
+      updatedAt: new Date().toISOString(),
+    }
+    delete updatedApplication.readyToSubmit
+    return updatedApplication
+  })
+}
+
+function updateApplicationLifecycle(applications, applicationId, responseApplication) {
+  return applications.map((application) => {
+    if (application.id !== applicationId) return application
+
+    const updatedApplication = { ...application }
+    for (const field of ['status', 'outcome', 'submittedAt', 'decisionRecordedAt']) {
+      if (Object.hasOwn(responseApplication, field)) {
+        updatedApplication[field] = responseApplication[field]
+      }
+    }
+
+    const currentUpdatedAt = typeof application.updatedAt === 'string'
+      ? Date.parse(application.updatedAt)
+      : Number.NaN
+    const responseUpdatedAt = typeof responseApplication.updatedAt === 'string'
+      ? Date.parse(responseApplication.updatedAt)
+      : Number.NaN
+    if (
+      Number.isFinite(responseUpdatedAt)
+      && (!Number.isFinite(currentUpdatedAt) || responseUpdatedAt > currentUpdatedAt)
+    ) {
+      updatedApplication.updatedAt = responseApplication.updatedAt
+    }
+
+    delete updatedApplication.readyToSubmit
+    return updatedApplication
   })
 }
 
@@ -217,6 +253,16 @@ export function appDataReducer(state, action) {
       return {
         ...state,
         applications: touchApplication(state.applications, action.payload.id, action.payload.patch),
+      }
+
+    case ACTIONS.APPLICATION_LIFECYCLE_UPDATED:
+      return {
+        ...state,
+        applications: updateApplicationLifecycle(
+          state.applications,
+          action.payload.id,
+          action.payload.application,
+        ),
       }
 
     case ACTIONS.DOCUMENT_ADDED:

@@ -19,6 +19,8 @@ import {
   replaceDocumentFile,
   createApplicationRecord,
   saveRequirementStatus,
+  submitApplication as submitApplicationRequest,
+  updateApplicationDecision as updateApplicationDecisionRequest,
   storeAuthToken,
 } from '../services'
 import { findAssistantAnswer } from '../data'
@@ -123,6 +125,18 @@ function getConfirmedRequirement(result, applicationId, requirementKey, status, 
   return requirement
 }
 
+function lifecycleErrorMessage(error, fallback) {
+  const details = Array.isArray(error?.details)
+    ? error.details
+      .map((detail) => typeof detail === 'string' ? detail : detail?.message ?? detail?.name)
+      .filter(Boolean)
+      .join(' ')
+    : ''
+  return [error instanceof Error ? error.message : fallback, details]
+    .filter(Boolean)
+    .join(' ')
+}
+
 export function AppDataProvider({ children }) {
   const [state, dispatch] = useReducer(appDataReducer, INITIAL_STATE)
   const [hydrationRetry, setHydrationRetry] = useState(0)
@@ -138,6 +152,7 @@ export function AppDataProvider({ children }) {
   const sessionId = user?.id ?? user?.email ?? null
   const notificationRequestGenerationRef = useRef(0)
   const notificationFetchInFlightGenerationRef = useRef(null)
+  const lifecycleRequestsRef = useRef(new Set())
   const [authSession, setAuthSession] = useState(() => ({
     authStatus,
     sessionId,
@@ -516,6 +531,75 @@ export function AppDataProvider({ children }) {
       throw error
     }
   }, [isCurrentSession, showToast])
+
+  const submitApplication = useCallback(async (applicationId) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return null
+    const requestKey = `${requestSessionGeneration}:lifecycle:${applicationId}`
+    if (lifecycleRequestsRef.current.has(requestKey)) return null
+    lifecycleRequestsRef.current.add(requestKey)
+
+    try {
+      const application = await submitApplicationRequest(applicationId)
+      if (!isCurrentSession(requestSessionGeneration)) return null
+      if (application?.id !== applicationId) {
+        throw new Error('The server returned an application that did not match the submission.')
+      }
+      dispatch({
+        type: ACTIONS.APPLICATION_LIFECYCLE_UPDATED,
+        payload: { id: applicationId, application },
+      })
+      showToast('Application submitted successfully.')
+      return application
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return null
+      if (error?.status === 401) {
+        signOut()
+        return null
+      }
+      showToast(lifecycleErrorMessage(error, 'We could not submit this application.'), 'warning')
+      throw error
+    } finally {
+      lifecycleRequestsRef.current.delete(requestKey)
+    }
+  }, [isCurrentSession, showToast, signOut])
+
+  const updateApplicationDecision = useCallback(async (applicationId, outcome) => {
+    const requestSessionGeneration = authSessionRef.current.generation
+    if (!isCurrentSession(requestSessionGeneration)) return null
+    if (!['pending', 'accepted', 'rejected'].includes(outcome)) {
+      const error = new Error('Choose pending, accepted, or rejected as the recorded outcome.')
+      showToast(error.message, 'warning')
+      throw error
+    }
+    const requestKey = `${requestSessionGeneration}:lifecycle:${applicationId}`
+    if (lifecycleRequestsRef.current.has(requestKey)) return null
+    lifecycleRequestsRef.current.add(requestKey)
+
+    try {
+      const application = await updateApplicationDecisionRequest(applicationId, outcome)
+      if (!isCurrentSession(requestSessionGeneration)) return null
+      if (application?.id !== applicationId) {
+        throw new Error('The server returned an application that did not match the decision update.')
+      }
+      dispatch({
+        type: ACTIONS.APPLICATION_LIFECYCLE_UPDATED,
+        payload: { id: applicationId, application },
+      })
+      showToast('Recorded outcome updated successfully.')
+      return application
+    } catch (error) {
+      if (!isCurrentSession(requestSessionGeneration)) return null
+      if (error?.status === 401) {
+        signOut()
+        return null
+      }
+      showToast(lifecycleErrorMessage(error, 'We could not update the recorded outcome.'), 'warning')
+      throw error
+    } finally {
+      lifecycleRequestsRef.current.delete(requestKey)
+    }
+  }, [isCurrentSession, showToast, signOut])
 
   const updateApplication = useCallback((id, patch) => {
     dispatch({ type: ACTIONS.APPLICATION_PATCHED, payload: { id, patch } })
@@ -1033,6 +1117,8 @@ export function AppDataProvider({ children }) {
       setRequirementStatus,
       toggleRequirement,
       startApplication,
+      submitApplication,
+      updateApplicationDecision,
       updateApplication,
       openUploadModal,
       closeUploadModal,
@@ -1067,6 +1153,8 @@ export function AppDataProvider({ children }) {
       setRequirementStatus,
       toggleRequirement,
       startApplication,
+      submitApplication,
+      updateApplicationDecision,
       updateApplication,
       openUploadModal,
       closeUploadModal,

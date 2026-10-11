@@ -46,3 +46,19 @@ export async function saveRequirementStatus({
     { method: 'PATCH', body },
   )
 }
+
+export async function submitApplication(applicationId) {
+  const payload = await request(
+    `applications/${encodeURIComponent(applicationId)}/submit`,
+    { method: 'POST' },
+  )
+  return applicationFromResponse(payload)
+}
+
+export async function updateApplicationDecision(applicationId, outcome) {
+  const payload = await request(
+    `applications/${encodeURIComponent(applicationId)}/decision`,
+    { method: 'PATCH', body: { outcome } },
+  )
+  return applicationFromResponse(payload)
+}

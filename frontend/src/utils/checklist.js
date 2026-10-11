@@ -19,6 +19,12 @@ export const APPLICATION_STATUS_LABELS = {
   completed: 'Completed',
 }
 
+export const APPLICATION_OUTCOME_LABELS = {
+  pending: 'Pending',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+}
+
 export const DOCUMENT_STATUS_LABELS = {
   verified: 'Verified',
   'in-review': 'In review',

@@ -18,6 +18,11 @@ export function ApplicationCard({ application, onOpen, compact = false }) {
           <p className="ui-caption">
             {application.reference} · Updated {formatRelativeTime(application.updatedAt)}
           </p>
+          {application.outcome ? (
+            <p className="ui-caption">
+              Owner-recorded outcome: {application.outcomeLabel ?? application.outcome}
+            </p>
+          ) : null}
         </div>
 
         <StatusBadge status={application.badgeStatus}>{application.statusLabel}</StatusBadge>
