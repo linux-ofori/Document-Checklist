@@ -8,6 +8,7 @@ const { removeStoredFile } = require('../config/fileStorage');
 const { deleteDocumentsByOwnerId, findDocumentsByOwnerId } = require('../models/documentModel');
 const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
 const { deleteAllNotifications } = require('../services/notificationService');
+const { completeAccountReminderCleanup } = require('../services/expiryReminderCleanup');
 const {
   createUser,
   changeUserPasswordById,
@@ -270,6 +271,8 @@ async function completeAccountDeletion(userId) {
       await removeStoredFile(document.storageKey);
     }
   }
+
+  await completeAccountReminderCleanup(userId);
 
   await deleteDocumentsByOwnerId(userId);
   await deleteApplicationsByOwnerId(userId);

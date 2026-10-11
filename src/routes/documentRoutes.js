@@ -27,6 +27,14 @@ const {
   updateDocumentFileById,
   updateDocumentById
 } = require('../models/documentModel');
+const { normalizeExpiryUtcDate } = require('../services/expiryReminderSchedule');
+const {
+  completeDocumentReminderCleanup,
+  prepareExpiryChange,
+  commitExpiryChange,
+  cancelPreparedExpiryChange,
+  reconcilePendingDocumentExpiryCleanup
+} = require('../services/expiryReminderCleanup');
 
 const router = express.Router();
 const multipartParser = multer({
@@ -197,6 +205,8 @@ async function completeDocumentDeletion(ownerId, documentId) {
     return false;
   }
 
+  await reconcilePendingDocumentExpiryCleanup(ownerId, documentId);
+
   if (!document.deleting) {
     document = await markDocumentDeletingById(documentId, ownerId);
     if (!document) {
@@ -209,6 +219,8 @@ async function completeDocumentDeletion(ownerId, documentId) {
   if (!document.deleting) {
     throw new Error('Unable to mark the document for deletion.');
   }
+
+  await completeDocumentReminderCleanup(ownerId, documentId);
 
   await clearDocumentRequirementReferences(ownerId, documentId);
   if (document.storageKey) {
@@ -589,6 +601,7 @@ router.put('/:id', async (request, response, next) => {
         return { kind: 'missing-owner' };
       }
 
+      await reconcilePendingDocumentExpiryCleanup(request.user.id, request.params.id);
       const currentDocument = await findDocumentById(request.params.id, request.user.id);
       if (!currentDocument) {
         return { kind: 'missing-document' };
@@ -637,8 +650,37 @@ router.put('/:id', async (request, response, next) => {
         }
       }
 
+      const currentExpiration = currentDocument.expiresAt === null || typeof currentDocument.expiresAt !== 'string'
+        ? null
+        : normalizeExpiryUtcDate(currentDocument.expiresAt);
+      const nextExpiration = Object.hasOwn(input.updates, 'expiresAt')
+        ? (input.updates.expiresAt === null ? null : normalizeExpiryUtcDate(input.updates.expiresAt))
+        : currentExpiration;
+      const shouldResetReminders = Object.hasOwn(input.updates, 'expiresAt')
+        && currentExpiration !== nextExpiration;
+
+      const expiryOperation = shouldResetReminders
+        ? await prepareExpiryChange({
+          ownerId: request.user.id,
+          documentId: request.params.id,
+          previousExpiry: currentExpiration,
+          targetExpiry: nextExpiration
+        })
+        : null;
+
       const document = await updateDocumentById(request.params.id, request.user.id, input.updates);
-      return document ? { kind: 'updated', document } : { kind: 'missing-document' };
+      if (!document) {
+        if (expiryOperation) {
+          await cancelPreparedExpiryChange(expiryOperation._id);
+        }
+        return { kind: 'missing-document' };
+      }
+
+      if (expiryOperation) {
+        await commitExpiryChange(expiryOperation._id);
+      }
+
+      return { kind: 'updated', document };
     });
 
     if (result.kind === 'missing-owner') {

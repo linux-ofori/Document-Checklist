@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const fsPromises = require('node:fs/promises');
 const path = require('node:path');
@@ -18,6 +19,10 @@ process.env.DOCUMENT_CHECKLIST_USERS_DB_PATH = path.join(testDataDirectory, 'use
 process.env.DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH = path.join(testDataDirectory, 'documents.db');
 process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(testDataDirectory, 'applications.db');
 process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = path.join(testDataDirectory, 'notifications.db');
+process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH =
+  path.join(testDataDirectory, 'expiry-reminders.db');
+process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH =
+  path.join(testDataDirectory, 'expiry-reminder-cleanup.db');
 process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY = path.join(testDataDirectory, 'uploads');
 process.env.LOGIN_RATE_LIMIT_MAX = '30';
 process.env.PASSWORD_CHANGE_RATE_LIMIT_MAX = '30';
@@ -27,12 +32,30 @@ const app = require('../src/server');
 const database = require('../src/config/database');
 const documentsDatabase = require('../src/config/documentsDatabase');
 const applicationsDatabase = require('../src/config/applicationsDatabase');
+const notificationsDatabase = require('../src/config/notificationsDatabase');
+const expiryReminderCleanupDatabase = require('../src/config/expiryReminderCleanupDatabase');
+const expiryRemindersDatabase = require('../src/config/expiryRemindersDatabase');
 const { uploadsDirectory } = require('../src/config/databasePaths');
 const authRoutes = require('../src/routes/authRoutes');
 const documentRoutes = require('../src/routes/documentRoutes');
 const withAccountOperationLock = require('../src/models/accountOperationLock');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
+const {
+  createNotification,
+  createDocumentExpiryNotification,
+  findNotificationsByOccurrenceIds
+} = require('../src/models/notificationModel');
+const { createDocument, findDocumentById } = require('../src/models/documentModel');
+const {
+  createReminderOccurrence,
+  findReminderOccurrencesByDocument
+} = require('../src/models/expiryReminderModel');
+const { findOperations } = require('../src/models/expiryReminderCleanupModel');
+const {
+  prepareExpiryChange,
+  recoverPendingExpiryReminderCleanup
+} = require('../src/services/expiryReminderCleanup');
 const {
   deleteUserById,
   findUserByEmail,
@@ -50,6 +73,7 @@ before(async () => {
     server.once('listening', resolve);
     server.once('error', reject);
   });
+
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
@@ -181,6 +205,79 @@ function insertLegacyDocument(document) {
     documentsDatabase.insert(document, (error, inserted) => error ? reject(error) : resolve(inserted));
   });
 }
+
+test('recovers account reminder cleanup after datastore reopen', async () => {
+  const restartDirectory = path.join(testDataDirectory, 'restart-recovery');
+  fs.mkdirSync(restartDirectory, { recursive: true });
+  const environment = {
+    PATH: process.env.PATH,
+    SystemRoot: process.env.SystemRoot,
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+    NODE_ENV: 'test',
+    JWT_SECRET: 'test-only-restart-recovery-secret',
+    DOCUMENT_CHECKLIST_USERS_DB_PATH: path.join(restartDirectory, 'users.db'),
+    DOCUMENT_CHECKLIST_DOCUMENTS_DB_PATH: path.join(restartDirectory, 'documents.db'),
+    DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH: path.join(restartDirectory, 'applications.db'),
+    DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH: path.join(restartDirectory, 'notifications.db'),
+    DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH: path.join(restartDirectory, 'expiry-reminders.db'),
+    DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH:
+      path.join(restartDirectory, 'expiry-reminder-cleanup.db')
+  };
+  const setup = spawnSync(process.execPath, ['-e', [
+    'const { createUser, markUserDeletingById } = require("./src/models/userModel");',
+    'const { createDocument } = require("./src/models/documentModel");',
+    'const { createReminderOccurrence } = require("./src/models/expiryReminderModel");',
+    'const { createDocumentExpiryNotification } = require("./src/models/notificationModel");',
+    'const { insertOperation } = require("./src/models/expiryReminderCleanupModel");',
+    '(async () => {',
+    '  const user = await createUser({ name: "Restart", email: "restart@example.test", password: "test" });',
+    '  const document = await createDocument({ ownerId: user._id, name: "Restart doc", completed: false, expiresAt: "2060-01-20" });',
+    '  const created = await createReminderOccurrence({ ownerId: user._id, documentId: document._id, expiryDate: "2060-01-20", leadDays: 7 });',
+    '  await createDocumentExpiryNotification({ ownerId: user._id, documentId: document._id, documentName: document.name, expiryDate: "2060-01-20", leadDays: 7, occurrenceId: created.occurrence._id });',
+    '  await markUserDeletingById(user._id);',
+    '  await insertOperation({ type: "account-deletion", state: "committed", ownerId: user._id, occurrenceIds: [created.occurrence._id] });',
+    '  console.log(user._id);',
+    '})().catch((error) => { console.error(error); process.exitCode = 1; });'
+  ].join('\n')], {
+    cwd: path.resolve(__dirname, '..'),
+    env: environment,
+    encoding: 'utf8'
+  });
+  assert.equal(setup.status, 0, setup.stderr);
+  const ownerId = setup.stdout.trim();
+  assert.ok(ownerId);
+
+  const recovery = spawnSync(process.execPath, ['-e', [
+    'const { recoverPendingExpiryReminderCleanup } = require("./src/services/expiryReminderCleanup");',
+    'const { recoverPendingAccountDeletions } = require("./src/routes/authRoutes");',
+    '(async () => { await recoverPendingExpiryReminderCleanup(); await recoverPendingAccountDeletions(); })()',
+    '  .catch((error) => { console.error(error); process.exitCode = 1; });'
+  ].join('\n')], {
+    cwd: path.resolve(__dirname, '..'),
+    env: environment,
+    encoding: 'utf8'
+  });
+  assert.equal(recovery.status, 0, recovery.stderr);
+
+  const verify = spawnSync(process.execPath, ['-e', [
+    'const { findUserById } = require("./src/models/userModel");',
+    'const { findOperations } = require("./src/models/expiryReminderCleanupModel");',
+    'const { findReminderOccurrencesByOwner } = require("./src/models/expiryReminderModel");',
+    'const { findNotificationsByOwnerId } = require("./src/models/notificationModel");',
+    `(async () => { const ownerId = ${JSON.stringify(ownerId)};`,
+    '  if (await findUserById(ownerId)) throw new Error("User remains after recovery.");',
+    '  if ((await findReminderOccurrencesByOwner(ownerId)).length) throw new Error("Occurrences remain.");',
+    '  if ((await findNotificationsByOwnerId(ownerId)).length) throw new Error("Notifications remain.");',
+    '  if ((await findOperations({ ownerId })).length) throw new Error("Journal remains.");',
+    '})().catch((error) => { console.error(error); process.exitCode = 1; });'
+  ].join('\n')], {
+    cwd: path.resolve(__dirname, '..'),
+    env: environment,
+    encoding: 'utf8'
+  });
+  assert.equal(verify.status, 0, verify.stderr);
+});
 
 test('returns JSON 404 responses for unknown API paths and unsupported methods', async () => {
   for (const [route, method] of [
@@ -619,6 +716,434 @@ test('authentication, account management, and document API', async (t) => {
     });
     assert.equal(deleted.status, 200);
     assert.equal((await request(`/api/documents/${documentId}`, { token: primaryToken })).status, 404);
+  });
+
+  await t.test('resumes expiry cleanup after notification deletion fails on an identical retry', async (cleanupTest) => {
+    const created = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: { name: 'Retry expiry cleanup', expiresAt: '2055-03-20' }
+    });
+    assert.equal(created.status, 201);
+    const documentId = created.payload.document.id;
+    const ownerId = registration.payload.user.id;
+    const occurrence = await createReminderOccurrence({
+      ownerId,
+      documentId,
+      expiryDate: '2055-03-20',
+      leadDays: 7
+    });
+    await createDocumentExpiryNotification({
+      ownerId,
+      documentId,
+      documentName: 'Retry expiry cleanup',
+      expiryDate: '2055-03-20',
+      leadDays: 7,
+      occurrenceId: occurrence.occurrence._id
+    });
+    const unrelatedNotification = await createNotification({
+      ownerId,
+      kind: 'application-update',
+      title: 'Keep this notification',
+      body: 'Unrelated notification',
+      severity: 'info',
+      applicationId: null
+    });
+    const otherOwnerId = `${ownerId}-other`;
+    const otherDocument = await createDocument({
+      ownerId: otherOwnerId, name: 'Other owner reminder', completed: false, expiresAt: '2055-03-20'
+    });
+    const otherOccurrence = await createReminderOccurrence({
+      ownerId: otherOwnerId, documentId: otherDocument._id, expiryDate: '2055-03-20', leadDays: 7
+    });
+    await createDocumentExpiryNotification({
+      ownerId: otherOwnerId,
+      documentId: otherDocument._id,
+      documentName: otherDocument.name,
+      expiryDate: '2055-03-20',
+      leadDays: 7,
+      occurrenceId: otherOccurrence.occurrence._id
+    });
+
+    await cleanupTest.test('keeps reminders for equivalent normalized expiry representations', async () => {
+      const equivalentDocument = await request('/api/documents', {
+        method: 'POST',
+        token: primaryToken,
+        body: { name: 'Equivalent expiry', expiresAt: '2055-06-20' }
+      });
+      assert.equal(equivalentDocument.status, 201);
+      const equivalentId = equivalentDocument.payload.document.id;
+      const equivalentOccurrence = await createReminderOccurrence({
+        ownerId,
+        documentId: equivalentId,
+        expiryDate: '2055-06-20',
+        leadDays: 7
+      });
+      await createDocumentExpiryNotification({
+        ownerId,
+        documentId: equivalentId,
+        documentName: 'Equivalent expiry',
+        expiryDate: '2055-06-20',
+        leadDays: 7,
+        occurrenceId: equivalentOccurrence.occurrence._id
+      });
+
+      const updated = await request(`/api/documents/${equivalentId}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body: { expiresAt: '2055-06-20T23:59:59.000Z' }
+      });
+      assert.equal(updated.status, 200);
+      assert.equal((await findReminderOccurrencesByDocument(ownerId, equivalentId)).length, 1);
+      assert.equal((await findNotificationsByOccurrenceIds(
+        ownerId,
+        [equivalentOccurrence.occurrence._id]
+      )).length, 1);
+      assert.deepEqual(await findOperations({ ownerId, documentId: equivalentId }), []);
+    });
+
+    await cleanupTest.test('resumes cleared-expiry cleanup after notification deletion fails', async () => {
+      const created = await request('/api/documents', {
+        method: 'POST',
+        token: primaryToken,
+        body: { name: 'Retry cleared expiry', expiresAt: '2055-05-20' }
+      });
+      assert.equal(created.status, 201);
+      const ownerId = registration.payload.user.id;
+      const documentId = created.payload.document.id;
+      const occurrence = await createReminderOccurrence({
+        ownerId, documentId, expiryDate: '2055-05-20', leadDays: 1
+      });
+      await createDocumentExpiryNotification({
+        ownerId, documentId, documentName: 'Retry cleared expiry',
+        expiryDate: '2055-05-20', leadDays: 1, occurrenceId: occurrence.occurrence._id
+      });
+      const originalRemove = notificationsDatabase.remove;
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      let failOnce = true;
+      notificationsDatabase.remove = (query, options, callback) => {
+        if (query.expiryReminderOccurrenceId && failOnce) {
+          failOnce = false;
+          callback(new Error('Injected linked notification cleanup failure.'));
+          return;
+        }
+        return originalRemove.call(notificationsDatabase, query, options, callback);
+      };
+      try {
+        const failed = await request(`/api/documents/${documentId}`, {
+          method: 'PUT', token: primaryToken, body: { expiresAt: null }
+        });
+        assert.equal(failed.status, 500);
+        const retried = await request(`/api/documents/${documentId}`, {
+          method: 'PUT', token: primaryToken, body: { expiresAt: null }
+        });
+        assert.equal(retried.status, 200);
+        assert.deepEqual(await findReminderOccurrencesByDocument(ownerId, documentId), []);
+        assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id]), []);
+      } finally {
+        notificationsDatabase.remove = originalRemove;
+        console.error = originalConsoleError;
+      }
+    });
+
+    await cleanupTest.test('recovers document deletion after notification cleanup fails', async () => {
+      const created = await request('/api/documents', {
+        method: 'POST', token: primaryToken,
+        body: { name: 'Retry deleted document', expiresAt: '2057-02-20' }
+      });
+      assert.equal(created.status, 201);
+      const ownerId = registration.payload.user.id;
+      const documentId = created.payload.document.id;
+      const occurrence = await createReminderOccurrence({
+        ownerId, documentId, expiryDate: '2057-02-20', leadDays: 7
+      });
+      await createDocumentExpiryNotification({
+        ownerId, documentId, documentName: 'Retry deleted document',
+        expiryDate: '2057-02-20', leadDays: 7, occurrenceId: occurrence.occurrence._id
+      });
+      const originalRemove = notificationsDatabase.remove;
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      let failOnce = true;
+      notificationsDatabase.remove = (query, options, callback) => {
+        if (query.expiryReminderOccurrenceId && failOnce) {
+          failOnce = false;
+          callback(new Error('Injected linked notification cleanup failure.'));
+          return;
+        }
+        return originalRemove.call(notificationsDatabase, query, options, callback);
+      };
+      try {
+        const failed = await request(`/api/documents/${documentId}`, {
+          method: 'DELETE', token: primaryToken
+        });
+        assert.equal(failed.status, 500);
+        assert.equal((await findDocumentById(documentId, ownerId)).deleting, true);
+        await documentRoutes.recoverPendingDocumentDeletions();
+        await documentRoutes.recoverPendingDocumentDeletions();
+        assert.equal(await findDocumentById(documentId, ownerId), null);
+        assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id]), []);
+      } finally {
+        notificationsDatabase.remove = originalRemove;
+        console.error = originalConsoleError;
+      }
+    });
+
+    await cleanupTest.test('recovers when linked notification deletion succeeds but occurrence deletion fails', async () => {
+      const created = await request('/api/documents', {
+        method: 'POST', token: primaryToken,
+        body: { name: 'Retry occurrence deletion', expiresAt: '2057-03-20' }
+      });
+      assert.equal(created.status, 201);
+      const ownerId = registration.payload.user.id;
+      const documentId = created.payload.document.id;
+      const occurrence = await createReminderOccurrence({
+        ownerId, documentId, expiryDate: '2057-03-20', leadDays: 7
+      });
+      await createDocumentExpiryNotification({
+        ownerId, documentId, documentName: 'Retry occurrence deletion',
+        expiryDate: '2057-03-20', leadDays: 7, occurrenceId: occurrence.occurrence._id
+      });
+      const originalRemove = expiryRemindersDatabase.database.remove;
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      let failOnce = true;
+      expiryRemindersDatabase.database.remove = (query, options, callback) => {
+        if (query._id && query.ownerId && failOnce) {
+          failOnce = false;
+          callback(new Error('Injected occurrence deletion failure.'));
+          return;
+        }
+        return originalRemove.call(expiryRemindersDatabase.database, query, options, callback);
+      };
+      try {
+        const failed = await request(`/api/documents/${documentId}`, {
+          method: 'DELETE', token: primaryToken
+        });
+        assert.equal(failed.status, 500);
+        assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id]), []);
+        assert.equal((await findReminderOccurrencesByDocument(ownerId, documentId)).length, 1);
+        await documentRoutes.recoverPendingDocumentDeletions();
+        await documentRoutes.recoverPendingDocumentDeletions();
+        assert.equal(await findDocumentById(documentId, ownerId), null);
+        assert.deepEqual(await findReminderOccurrencesByDocument(ownerId, documentId), []);
+      } finally {
+        expiryRemindersDatabase.database.remove = originalRemove;
+        console.error = originalConsoleError;
+      }
+    });
+
+    await cleanupTest.test('keeps account deletion pending until reminder cleanup recovers', async () => {
+      const account = await request('/api/auth/register', {
+        method: 'POST',
+        body: { name: 'Reminder account failure', email: 'reminder-account-failure@example.com', password: 'reminder-account-failure-pass' }
+      });
+      assert.equal(account.status, 201);
+      const ownerId = account.payload.user.id;
+      const document = await createDocument({
+        ownerId, name: 'Account cleanup target', completed: false, expiresAt: '2058-02-20'
+      });
+      const occurrence = await createReminderOccurrence({
+        ownerId, documentId: document._id, expiryDate: '2058-02-20', leadDays: 7
+      });
+      await createDocumentExpiryNotification({
+        ownerId, documentId: document._id, documentName: document.name,
+        expiryDate: '2058-02-20', leadDays: 7, occurrenceId: occurrence.occurrence._id
+      });
+      const originalRemove = notificationsDatabase.remove;
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      let failOnce = true;
+      notificationsDatabase.remove = (query, options, callback) => {
+        if (query.expiryReminderOccurrenceId && failOnce) {
+          failOnce = false;
+          callback(new Error('Injected account reminder cleanup failure.'));
+          return;
+        }
+        return originalRemove.call(notificationsDatabase, query, options, callback);
+      };
+      try {
+        const failed = await request('/api/auth/me', { method: 'DELETE', token: account.payload.token });
+        assert.equal(failed.status, 500);
+        assert.equal((await findUserById(ownerId)).deleting, true);
+        await authRoutes.recoverPendingAccountDeletions();
+        await authRoutes.recoverPendingAccountDeletions();
+        assert.equal(await findUserById(ownerId), null);
+        assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id]), []);
+      } finally {
+        notificationsDatabase.remove = originalRemove;
+        console.error = originalConsoleError;
+      }
+    });
+
+    await cleanupTest.test('retries journal removal after reminder data has been cleaned', async () => {
+      const created = await request('/api/documents', {
+        method: 'POST', token: primaryToken,
+        body: { name: 'Retry journal removal', expiresAt: '2059-03-20' }
+      });
+      assert.equal(created.status, 201);
+      const ownerId = registration.payload.user.id;
+      const documentId = created.payload.document.id;
+      const occurrence = await createReminderOccurrence({
+        ownerId, documentId, expiryDate: '2059-03-20', leadDays: 7
+      });
+      await createDocumentExpiryNotification({
+        ownerId, documentId, documentName: 'Retry journal removal',
+        expiryDate: '2059-03-20', leadDays: 7, occurrenceId: occurrence.occurrence._id
+      });
+      const originalRemove = expiryReminderCleanupDatabase.database.remove;
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      let failOnce = true;
+      expiryReminderCleanupDatabase.database.remove = (query, options, callback) => {
+        if (query._id && failOnce) {
+          failOnce = false;
+          callback(new Error('Injected journal removal failure.'));
+          return;
+        }
+        return originalRemove.call(expiryReminderCleanupDatabase.database, query, options, callback);
+      };
+      try {
+        const failed = await request(`/api/documents/${documentId}`, {
+          method: 'PUT', token: primaryToken, body: { expiresAt: '2059-03-21' }
+        });
+        assert.equal(failed.status, 500);
+        assert.deepEqual(await findReminderOccurrencesByDocument(ownerId, documentId), []);
+        assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id]), []);
+        await recoverPendingExpiryReminderCleanup();
+        await recoverPendingExpiryReminderCleanup();
+        assert.deepEqual(await findOperations({ ownerId, documentId }), []);
+      } finally {
+        expiryReminderCleanupDatabase.database.remove = originalRemove;
+        console.error = originalConsoleError;
+      }
+    });
+
+    const originalRemove = notificationsDatabase.remove;
+    const originalConsoleError = console.error;
+    console.error = () => {};
+    let failOnce = true;
+    notificationsDatabase.remove = (query, options, callback) => {
+      if (query.expiryReminderOccurrenceId && failOnce) {
+        failOnce = false;
+        callback(new Error('Injected linked notification cleanup failure.'));
+        return;
+      }
+      return originalRemove.call(notificationsDatabase, query, options, callback);
+    };
+    try {
+      const failed = await request(`/api/documents/${documentId}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body: { expiresAt: '2055-03-21' }
+      });
+      assert.equal(failed.status, 500);
+      assert.equal((await findOperations({
+        ownerId,
+        documentId,
+        type: 'expiry-change'
+      })).length, 1);
+      assert.equal((await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id])).length, 1);
+
+      const retried = await request(`/api/documents/${documentId}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body: { expiresAt: '2055-03-21' }
+      });
+      assert.equal(retried.status, 200);
+      assert.deepEqual(await findReminderOccurrencesByDocument(ownerId, documentId), []);
+      assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [occurrence.occurrence._id]), []);
+      assert.equal((await findNotificationsByOwnerId(ownerId))
+        .some(({ _id }) => _id === unrelatedNotification._id), true);
+      assert.ok(await findReminderOccurrencesByDocument(otherOwnerId, otherDocument._id)
+        .then((items) => items.some(({ _id }) => _id === otherOccurrence.occurrence._id)));
+      assert.equal((await findNotificationsByOccurrenceIds(otherOwnerId, [otherOccurrence.occurrence._id])).length, 1);
+      assert.equal((await findOperations({ ownerId, documentId })).length, 0);
+    } finally {
+      notificationsDatabase.remove = originalRemove;
+      console.error = originalConsoleError;
+    }
+  });
+
+  await t.test('journal persistence failure prevents an expiry mutation', async () => {
+    const created = await request('/api/documents', {
+      method: 'POST',
+      token: primaryToken,
+      body: { name: 'Journal insert failure', expiresAt: '2055-04-20' }
+    });
+    assert.equal(created.status, 201);
+    const originalInsert = expiryReminderCleanupDatabase.database.insert;
+    const originalConsoleError = console.error;
+    expiryReminderCleanupDatabase.database.insert = (_operation, callback) =>
+      callback(new Error('Injected cleanup journal insert failure.'));
+    console.error = () => {};
+    try {
+      const failed = await request(`/api/documents/${created.payload.document.id}`, {
+        method: 'PUT',
+        token: primaryToken,
+        body: { expiresAt: '2055-04-21' }
+      });
+      assert.equal(failed.status, 500);
+      const stored = await request(`/api/documents/${created.payload.document.id}`, { token: primaryToken });
+      assert.equal(stored.payload.document.expiresAt, '2055-04-20T00:00:00.000Z');
+    } finally {
+      expiryReminderCleanupDatabase.database.insert = originalInsert;
+      console.error = originalConsoleError;
+    }
+  });
+
+  await t.test('reconciles prepared expiry cleanup before or after the document mutation', async () => {
+    const ownerId = registration.payload.user.id;
+    const oldDocument = await createDocument({
+      ownerId, name: 'Prepared old expiry', completed: false, expiresAt: '2056-06-20'
+    });
+    const oldOccurrence = await createReminderOccurrence({
+      ownerId, documentId: oldDocument._id, expiryDate: '2056-06-20', leadDays: 7
+    });
+    const oldIntent = await prepareExpiryChange({
+      ownerId, documentId: oldDocument._id, previousExpiry: '2056-06-20', targetExpiry: '2056-06-21'
+    });
+
+    await recoverPendingExpiryReminderCleanup();
+    assert.ok(await findReminderOccurrencesByDocument(ownerId, oldDocument._id)
+      .then((items) => items.some(({ _id }) => _id === oldOccurrence.occurrence._id)));
+    assert.equal((await findOperations({ _id: oldIntent._id })).length, 0);
+
+    const targetDocument = await createDocument({
+      ownerId, name: 'Prepared target expiry', completed: false, expiresAt: '2056-07-20'
+    });
+    const targetOccurrence = await createReminderOccurrence({
+      ownerId, documentId: targetDocument._id, expiryDate: '2056-07-20', leadDays: 7
+    });
+    await createDocumentExpiryNotification({
+      ownerId,
+      documentId: targetDocument._id,
+      documentName: targetDocument.name,
+      expiryDate: '2056-07-20',
+      leadDays: 7,
+      occurrenceId: targetOccurrence.occurrence._id
+    });
+    const targetIntent = await prepareExpiryChange({
+      ownerId,
+      documentId: targetDocument._id,
+      previousExpiry: '2056-07-20',
+      targetExpiry: '2056-07-21'
+    });
+    const documentsDatabase = require('../src/config/documentsDatabase');
+    await new Promise((resolve, reject) => {
+      documentsDatabase.update(
+        { _id: targetDocument._id, ownerId },
+        { $set: { expiresAt: '2056-07-21' } },
+        {},
+        (error) => error ? reject(error) : resolve()
+      );
+    });
+
+    await recoverPendingExpiryReminderCleanup();
+    assert.deepEqual(await findReminderOccurrencesByDocument(ownerId, targetDocument._id), []);
+    assert.deepEqual(await findNotificationsByOccurrenceIds(ownerId, [targetOccurrence.occurrence._id]), []);
+    assert.equal((await findOperations({ _id: targetIntent._id })).length, 0);
   });
 
   await t.test('prevents users from accessing another user\'s documents', async () => {

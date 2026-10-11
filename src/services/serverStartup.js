@@ -1,13 +1,17 @@
 async function startServerAfterRecovery({
+  initializeExpiryRemindersDatabase,
+  initializeExpiryReminderCleanupDatabase,
+  recoverPendingExpiryReminderCleanup,
   recoverPendingDocumentDeletions,
   recoverPendingAccountDeletions,
-  initializeExpiryRemindersDatabase,
   startListening,
   startReminderScheduler
 }) {
+  await initializeExpiryRemindersDatabase();
+  await initializeExpiryReminderCleanupDatabase();
+  await recoverPendingExpiryReminderCleanup();
   await recoverPendingDocumentDeletions();
   await recoverPendingAccountDeletions();
-  await initializeExpiryRemindersDatabase();
   const server = await startListening();
   await startReminderScheduler();
   return server;

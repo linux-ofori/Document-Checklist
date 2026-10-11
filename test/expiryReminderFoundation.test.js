@@ -14,10 +14,17 @@ process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(temporaryDirecto
 process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = path.join(temporaryDirectory, 'notifications.db');
 process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH =
   path.join(temporaryDirectory, 'expiry-reminders.db');
+process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH =
+  path.join(temporaryDirectory, 'expiry-reminder-cleanup.db');
 
 const Datastore = require('@seald-io/nedb');
 const { expiryRemindersDatabasePath } = require('../src/config/databasePaths');
 const { database: expiryRemindersDatabase } = require('../src/config/expiryRemindersDatabase');
+const {
+  database: cleanupJournalDatabase,
+  initializeExpiryReminderCleanupDatabase
+} = require('../src/config/expiryReminderCleanupDatabase');
+const { recoverPendingExpiryReminderCleanup } = require('../src/services/expiryReminderCleanup');
 const documentModel = require('../src/models/documentModel');
 const {
   claimReminderChannel,
@@ -108,6 +115,45 @@ test('rejects a reminder database path that collides with an existing database p
       DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH: duplicatePath
     },
     encoding: 'utf8'
+  });
+
+  test('rejects a cleanup journal path that collides with an existing database path', () => {
+    const duplicatePath = path.join(temporaryDirectory, 'shared-cleanup.db');
+    const result = spawnSync(process.execPath, [
+      '-e',
+      `require(${JSON.stringify(databasePathsModule)})`
+    ], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        DOCUMENT_CHECKLIST_USERS_DB_PATH: duplicatePath,
+        DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH: duplicatePath
+      },
+      encoding: 'utf8'
+    });
+
+    test('preserves malformed cleanup journal records and fails recovery visibly', async () => {
+      await initializeExpiryReminderCleanupDatabase();
+      const malformed = {
+        _id: 'malformed-cleanup-record',
+        type: 'unknown-operation',
+        state: 'pending',
+        ownerId: 'owner-malformed',
+        occurrenceIds: [],
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      await new Promise((resolve, reject) => {
+        cleanupJournalDatabase.insert(malformed, (error) => error ? reject(error) : resolve());
+      });
+
+      await assert.rejects(recoverPendingExpiryReminderCleanup(), /malformed or unsupported/);
+      const preserved = await findOne(cleanupJournalDatabase, { _id: malformed._id });
+      assert.deepEqual(preserved, malformed);
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /users and expiry reminder cleanup database paths must be different/);
   });
 
   assert.notEqual(result.status, 0);

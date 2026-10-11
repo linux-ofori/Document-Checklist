@@ -3,6 +3,7 @@ const {
   database,
   initializeExpiryRemindersDatabase
 } = require('../config/expiryRemindersDatabase');
+const { deleteNotificationsByOccurrenceIds } = require('./notificationModel');
 const {
   getUtcDateDaysBefore,
   normalizeExpiryUtcDate
@@ -142,6 +143,118 @@ function findReminderOccurrenceById(id) {
     throw new TypeError('A non-empty reminder occurrence ID is required.');
   }
   return findOne({ _id: id });
+}
+
+async function findReminderOccurrencesByDocument(ownerId, documentId) {
+  if (typeof ownerId !== 'string' || ownerId.trim() === '') {
+    throw new TypeError('A non-empty owner ID is required.');
+  }
+  if (typeof documentId !== 'string' || documentId.trim() === '') {
+    throw new TypeError('A non-empty document ID is required.');
+  }
+
+  await initializeExpiryRemindersDatabase();
+  return new Promise((resolve, reject) => {
+    database.find({ ownerId, documentId }, (error, documents) =>
+      error ? reject(error) : resolve(documents));
+  });
+}
+
+async function findReminderOccurrencesByOwner(ownerId) {
+  if (typeof ownerId !== 'string' || ownerId.trim() === '') {
+    throw new TypeError('A non-empty owner ID is required.');
+  }
+
+  await initializeExpiryRemindersDatabase();
+  return new Promise((resolve, reject) => {
+    database.find({ ownerId }, (error, documents) =>
+      error ? reject(error) : resolve(documents));
+  });
+}
+
+async function deleteReminderOccurrencesByDocument(ownerId, documentId) {
+  return deleteReminderOccurrencesAndNotificationsByDocument(ownerId, documentId);
+}
+
+async function deleteReminderOccurrencesByOwner(ownerId) {
+  return deleteReminderOccurrencesAndNotificationsByOwner(ownerId);
+}
+
+async function findReminderOccurrencesByIds(ownerId, occurrenceIds) {
+  if (typeof ownerId !== 'string' || ownerId.trim() === '') {
+    throw new TypeError('A non-empty owner ID is required.');
+  }
+  const ids = [...new Set(
+    (Array.isArray(occurrenceIds) ? occurrenceIds : [])
+      .filter((id) => typeof id === 'string' && id.trim() !== '')
+      .map((id) => id.trim())
+  )];
+  if (ids.length === 0) {
+    return [];
+  }
+
+  await initializeExpiryRemindersDatabase();
+  return new Promise((resolve, reject) => {
+    database.find({ ownerId, _id: { $in: ids } }, (error, occurrences) =>
+      error ? reject(error) : resolve(occurrences));
+  });
+}
+
+async function deleteReminderOccurrencesByIds(ownerId, documentId, occurrenceIds) {
+  if (typeof ownerId !== 'string' || ownerId.trim() === '') {
+    throw new TypeError('A non-empty owner ID is required.');
+  }
+  const ids = [...new Set(
+    (Array.isArray(occurrenceIds) ? occurrenceIds : [])
+      .filter((id) => typeof id === 'string' && id.trim() !== '')
+      .map((id) => id.trim())
+  )];
+  if (ids.length === 0) {
+    return;
+  }
+
+  const query = { ownerId, _id: { $in: ids } };
+  if (documentId !== null) {
+    if (typeof documentId !== 'string' || documentId.trim() === '') {
+      throw new TypeError('A non-empty document ID is required.');
+    }
+    query.documentId = documentId;
+  }
+  await initializeExpiryRemindersDatabase();
+  await new Promise((resolve, reject) => {
+    database.remove(query, { multi: true }, (error) => error ? reject(error) : resolve());
+  });
+
+  const remaining = await findReminderOccurrencesByIds(ownerId, ids);
+  if (remaining.some((occurrence) => documentId === null || occurrence.documentId === documentId)) {
+    throw new Error('Reminder occurrences remain after scoped cleanup.');
+  }
+}
+
+async function deleteReminderOccurrencesAndNotificationsByDocument(ownerId, documentId) {
+  const occurrences = await findReminderOccurrencesByDocument(ownerId, documentId);
+  const occurrenceIds = occurrences.map((occurrence) => occurrence._id);
+  if (occurrenceIds.length === 0) {
+    return [];
+  }
+
+  await deleteNotificationsByOccurrenceIds(ownerId, occurrenceIds);
+  await deleteReminderOccurrencesByIds(ownerId, documentId, occurrenceIds);
+
+  return occurrenceIds;
+}
+
+async function deleteReminderOccurrencesAndNotificationsByOwner(ownerId) {
+  const occurrences = await findReminderOccurrencesByOwner(ownerId);
+  const occurrenceIds = occurrences.map((occurrence) => occurrence._id);
+  if (occurrenceIds.length === 0) {
+    return [];
+  }
+
+  await deleteNotificationsByOccurrenceIds(ownerId, occurrenceIds);
+  await deleteReminderOccurrencesByIds(ownerId, null, occurrenceIds);
+
+  return occurrenceIds;
 }
 
 function findReminderOccurrencesDue(channel, { throughDate, now = new Date() } = {}) {
@@ -335,8 +448,16 @@ module.exports = {
   claimReminderChannel,
   completeReminderChannel,
   createReminderOccurrence,
+  deleteReminderOccurrencesAndNotificationsByDocument,
+  deleteReminderOccurrencesAndNotificationsByOwner,
+  deleteReminderOccurrencesByIds,
+  deleteReminderOccurrencesByDocument,
+  deleteReminderOccurrencesByOwner,
   findReminderOccurrenceById,
   findReminderOccurrenceByKey,
+  findReminderOccurrencesByDocument,
+  findReminderOccurrencesByIds,
+  findReminderOccurrencesByOwner,
   findReminderOccurrencesDue,
   suppressReminderChannel
 };

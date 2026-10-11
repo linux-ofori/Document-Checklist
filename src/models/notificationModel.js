@@ -149,10 +149,58 @@ function deleteNotificationsByOwnerId(ownerId) {
   });
 }
 
+function deleteNotificationsByOccurrenceIds(ownerId, occurrenceIds) {
+  if (typeof ownerId !== 'string' || ownerId.trim() === '') {
+    throw new TypeError('A non-empty owner ID is required.');
+  }
+
+  const normalizedOccurrenceIds = [...new Set(
+    (Array.isArray(occurrenceIds) ? occurrenceIds : [])
+      .filter((occurrenceId) => typeof occurrenceId === 'string' && occurrenceId.trim() !== '')
+      .map((occurrenceId) => occurrenceId.trim())
+  )];
+
+  if (normalizedOccurrenceIds.length === 0) {
+    return Promise.resolve(0);
+  }
+
+  return new Promise((resolve, reject) => {
+    database.remove(
+      { ownerId, expiryReminderOccurrenceId: { $in: normalizedOccurrenceIds } },
+      { multi: true },
+      (error, count) => error ? reject(error) : resolve(count)
+    );
+  });
+}
+
+function findNotificationsByOccurrenceIds(ownerId, occurrenceIds) {
+  if (typeof ownerId !== 'string' || ownerId.trim() === '') {
+    throw new TypeError('A non-empty owner ID is required.');
+  }
+
+  const normalizedOccurrenceIds = [...new Set(
+    (Array.isArray(occurrenceIds) ? occurrenceIds : [])
+      .filter((occurrenceId) => typeof occurrenceId === 'string' && occurrenceId.trim() !== '')
+      .map((occurrenceId) => occurrenceId.trim())
+  )];
+  if (normalizedOccurrenceIds.length === 0) {
+    return Promise.resolve([]);
+  }
+
+  return new Promise((resolve, reject) => {
+    database.find({
+      ownerId,
+      expiryReminderOccurrenceId: { $in: normalizedOccurrenceIds }
+    }, (error, notifications) => error ? reject(error) : resolve(notifications));
+  });
+}
+
 module.exports = {
   createDocumentExpiryNotification,
   createNotification,
+  deleteNotificationsByOccurrenceIds,
   deleteNotificationsByOwnerId,
+  findNotificationsByOccurrenceIds,
   findNotificationByIdAndOwnerId,
   findNotificationsByOwnerId,
   markAllNotificationsRead,

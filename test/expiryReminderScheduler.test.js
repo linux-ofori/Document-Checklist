@@ -14,6 +14,8 @@ process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH = path.join(temporaryDirecto
 process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH = path.join(temporaryDirectory, 'notifications.db');
 process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH =
   path.join(temporaryDirectory, 'expiry-reminders.db');
+process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH =
+  path.join(temporaryDirectory, 'expiry-reminder-cleanup.db');
 
 const notificationsDatabase = require('../src/config/notificationsDatabase');
 const { createDocumentExpiryNotification } = require('../src/models/notificationModel');
@@ -31,6 +33,9 @@ const {
 const withAccountOperationLock = require('../src/models/accountOperationLock');
 const {
   completeReminderChannel,
+  createReminderOccurrence,
+  deleteReminderOccurrencesByDocument,
+  deleteReminderOccurrencesByOwner,
   findReminderOccurrenceByKey
 } = require('../src/models/expiryReminderModel');
 const {
@@ -40,7 +45,10 @@ const {
   markUserDeletingById,
   updateUserById
 } = require('../src/models/userModel');
-const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
+const {
+  deleteNotificationsByOccurrenceIds,
+  findNotificationsByOwnerId
+} = require('../src/models/notificationModel');
 const { toPublicNotification } = require('../src/services/notificationService');
 const { createExpiryReminderScheduler } = require('../src/services/expiryReminderScheduler');
 const { startServerAfterRecovery } = require('../src/services/serverStartup');
@@ -284,7 +292,9 @@ test('keeps notification insertion idempotent across scheduler instances', async
       DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH: process.env.DOCUMENT_CHECKLIST_APPLICATIONS_DB_PATH,
       DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH: process.env.DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH,
       DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH:
-        process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH
+        process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH,
+      DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH:
+        process.env.DOCUMENT_CHECKLIST_EXPIRY_REMINDER_CLEANUP_DB_PATH
     },
     encoding: 'utf8'
   });
@@ -716,20 +726,213 @@ test('coalesces overlapping runs and reports background failures safely', async 
   assert.match(reported[0][1].message, /Simulated scheduler query failure/);
 });
 
-test('starts the scheduler only after deletion recovery, ledger initialization, and listening', async () => {
+test('removes stale reminder occurrences and linked notifications when a document expiry changes', async () => {
+  const ownerId = `owner-expiry-change-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const document = await createDocument({
+    ownerId,
+    name: 'Expiry change cleanup document',
+    completed: false,
+    expiresAt: '2050-06-20'
+  });
+
+  const firstOccurrence = await createReminderOccurrence({
+    ownerId,
+    documentId: document._id,
+    expiryDate: '2050-06-20',
+    leadDays: 7
+  });
+  const secondOccurrence = await createReminderOccurrence({
+    ownerId,
+    documentId: document._id,
+    expiryDate: '2050-06-20',
+    leadDays: 1
+  });
+  await createDocumentExpiryNotification({
+    ownerId,
+    documentId: document._id,
+    documentName: document.name,
+    expiryDate: '2050-06-20',
+    leadDays: 7,
+    occurrenceId: firstOccurrence.occurrence._id
+  });
+  await createDocumentExpiryNotification({
+    ownerId,
+    documentId: document._id,
+    documentName: document.name,
+    expiryDate: '2050-06-20',
+    leadDays: 1,
+    occurrenceId: secondOccurrence.occurrence._id
+  });
+
+  const removedIds = await deleteReminderOccurrencesByDocument(ownerId, document._id);
+  assert.deepEqual(new Set(removedIds), new Set([
+    firstOccurrence.occurrence._id,
+    secondOccurrence.occurrence._id
+  ]));
+  assert.equal(await findReminderOccurrenceByKey({
+    ownerId,
+    documentId: document._id,
+    expiryDate: '2050-06-20',
+    leadDays: 7
+  }), null);
+  assert.equal(await findReminderOccurrenceByKey({
+    ownerId,
+    documentId: document._id,
+    expiryDate: '2050-06-20',
+    leadDays: 1
+  }), null);
+  assert.equal(await deleteNotificationsByOccurrenceIds(ownerId, removedIds), 0);
+  assert.equal((await notificationsFor(ownerId)).length, 0);
+});
+
+test('removes reminder cleanup for cleared expiry and deleted documents without affecting other owners', async () => {
+  const firstOwnerId = `owner-expiry-clear-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const secondOwnerId = `owner-expiry-clear-other-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const firstDocument = await createDocument({
+    ownerId: firstOwnerId,
+    name: 'Cleared expiry cleanup document',
+    completed: false,
+    expiresAt: '2051-04-15'
+  });
+  const secondDocument = await createDocument({
+    ownerId: secondOwnerId,
+    name: 'Other owner cleanup document',
+    completed: false,
+    expiresAt: '2051-04-15'
+  });
+
+  const firstOccurrence = await createReminderOccurrence({
+    ownerId: firstOwnerId,
+    documentId: firstDocument._id,
+    expiryDate: '2051-04-15',
+    leadDays: 7
+  });
+  const secondOccurrence = await createReminderOccurrence({
+    ownerId: secondOwnerId,
+    documentId: secondDocument._id,
+    expiryDate: '2051-04-15',
+    leadDays: 7
+  });
+
+  await createDocumentExpiryNotification({
+    ownerId: firstOwnerId,
+    documentId: firstDocument._id,
+    documentName: firstDocument.name,
+    expiryDate: '2051-04-15',
+    leadDays: 7,
+    occurrenceId: firstOccurrence.occurrence._id
+  });
+  await createDocumentExpiryNotification({
+    ownerId: secondOwnerId,
+    documentId: secondDocument._id,
+    documentName: secondDocument.name,
+    expiryDate: '2051-04-15',
+    leadDays: 7,
+    occurrenceId: secondOccurrence.occurrence._id
+  });
+
+  const clearedIds = await deleteReminderOccurrencesByDocument(firstOwnerId, firstDocument._id);
+  assert.deepEqual(clearedIds, [firstOccurrence.occurrence._id]);
+  assert.equal((await deleteNotificationsByOccurrenceIds(firstOwnerId, clearedIds)), 0);
+  assert.equal(await findReminderOccurrenceByKey({
+    ownerId: firstOwnerId,
+    documentId: firstDocument._id,
+    expiryDate: '2051-04-15',
+    leadDays: 7
+  }), null);
+  assert.ok(await findReminderOccurrenceByKey({
+    ownerId: secondOwnerId,
+    documentId: secondDocument._id,
+    expiryDate: '2051-04-15',
+    leadDays: 7
+  }));
+
+  const deletedIds = await deleteReminderOccurrencesByDocument(secondOwnerId, secondDocument._id);
+  assert.deepEqual(deletedIds, [secondOccurrence.occurrence._id]);
+  assert.equal((await deleteNotificationsByOccurrenceIds(secondOwnerId, deletedIds)), 0);
+  assert.equal(await findReminderOccurrenceByKey({
+    ownerId: secondOwnerId,
+    documentId: secondDocument._id,
+    expiryDate: '2051-04-15',
+    leadDays: 7
+  }), null);
+});
+
+test('removes reminder occurrences and notifications for the whole account during deletion and recovery', async () => {
+  const ownerId = `owner-account-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const firstDocument = await createDocument({
+    ownerId,
+    name: 'Account cleanup document 1',
+    completed: false,
+    expiresAt: '2052-08-12'
+  });
+  const secondDocument = await createDocument({
+    ownerId,
+    name: 'Account cleanup document 2',
+    completed: false,
+    expiresAt: '2052-08-20'
+  });
+
+  const firstOccurrence = await createReminderOccurrence({
+    ownerId,
+    documentId: firstDocument._id,
+    expiryDate: '2052-08-12',
+    leadDays: 7
+  });
+  const secondOccurrence = await createReminderOccurrence({
+    ownerId,
+    documentId: secondDocument._id,
+    expiryDate: '2052-08-20',
+    leadDays: 1
+  });
+
+  await createDocumentExpiryNotification({
+    ownerId,
+    documentId: firstDocument._id,
+    documentName: firstDocument.name,
+    expiryDate: '2052-08-12',
+    leadDays: 7,
+    occurrenceId: firstOccurrence.occurrence._id
+  });
+  await createDocumentExpiryNotification({
+    ownerId,
+    documentId: secondDocument._id,
+    documentName: secondDocument.name,
+    expiryDate: '2052-08-20',
+    leadDays: 1,
+    occurrenceId: secondOccurrence.occurrence._id
+  });
+
+  const removedIds = await deleteReminderOccurrencesByOwner(ownerId);
+  assert.deepEqual(new Set(removedIds), new Set([
+    firstOccurrence.occurrence._id,
+    secondOccurrence.occurrence._id
+  ]));
+  assert.equal(await deleteNotificationsByOccurrenceIds(ownerId, removedIds), 0);
+  assert.equal((await notificationsFor(ownerId)).length, 0);
+});
+
+test('starts the scheduler only after cleanup and deletion recovery, then listening', async () => {
   const events = [];
   let releaseDocumentRecovery;
+  let signalDocumentRecoveryStarted;
   const documentRecovery = new Promise((resolve) => {
     releaseDocumentRecovery = resolve;
   });
+  const documentRecoveryStarted = new Promise((resolve) => {
+    signalDocumentRecoveryStarted = resolve;
+  });
   const startup = startServerAfterRecovery({
+    initializeExpiryRemindersDatabase: async () => events.push('ledger-initialized'),
+    initializeExpiryReminderCleanupDatabase: async () => events.push('cleanup-journal-initialized'),
+    recoverPendingExpiryReminderCleanup: async () => events.push('cleanup-recovery'),
     recoverPendingDocumentDeletions: async () => {
       events.push('document-recovery-start');
+      signalDocumentRecoveryStarted();
       await documentRecovery;
       events.push('document-recovery-complete');
     },
     recoverPendingAccountDeletions: async () => events.push('account-recovery'),
-    initializeExpiryRemindersDatabase: async () => events.push('ledger-initialized'),
     startListening: async () => {
       events.push('listening');
       return 'server';
@@ -737,16 +940,40 @@ test('starts the scheduler only after deletion recovery, ledger initialization, 
     startReminderScheduler: async () => events.push('scheduler-started')
   });
 
-  await Promise.resolve();
-  assert.deepEqual(events, ['document-recovery-start']);
+  await documentRecoveryStarted;
+  assert.deepEqual(events, [
+    'ledger-initialized',
+    'cleanup-journal-initialized',
+    'cleanup-recovery',
+    'document-recovery-start'
+  ]);
   releaseDocumentRecovery();
   assert.equal(await startup, 'server');
   assert.deepEqual(events, [
+    'ledger-initialized',
+    'cleanup-journal-initialized',
+    'cleanup-recovery',
     'document-recovery-start',
     'document-recovery-complete',
     'account-recovery',
-    'ledger-initialized',
     'listening',
     'scheduler-started'
   ]);
+});
+
+test('does not listen or start the scheduler when cleanup recovery fails', async () => {
+  const events = [];
+  await assert.rejects(startServerAfterRecovery({
+    initializeExpiryRemindersDatabase: async () => events.push('ledger-initialized'),
+    initializeExpiryReminderCleanupDatabase: async () => events.push('journal-initialized'),
+    recoverPendingExpiryReminderCleanup: async () => {
+      events.push('cleanup-recovery');
+      throw new Error('Simulated pending cleanup failure.');
+    },
+    recoverPendingDocumentDeletions: async () => events.push('document-recovery'),
+    recoverPendingAccountDeletions: async () => events.push('account-recovery'),
+    startListening: async () => events.push('listening'),
+    startReminderScheduler: async () => events.push('scheduler-started')
+  }), /Simulated pending cleanup failure/);
+  assert.deepEqual(events, ['ledger-initialized', 'journal-initialized', 'cleanup-recovery']);
 });

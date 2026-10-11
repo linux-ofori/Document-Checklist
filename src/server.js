@@ -113,12 +113,20 @@ app.use((error, request, response, next) => {
 
 if (require.main === module) {
   const { initializeExpiryRemindersDatabase } = require('./config/expiryRemindersDatabase');
+  const {
+    initializeExpiryReminderCleanupDatabase
+  } = require('./config/expiryReminderCleanupDatabase');
   const { createExpiryReminderScheduler } = require('./services/expiryReminderScheduler');
+  const {
+    recoverPendingExpiryReminderCleanup
+  } = require('./services/expiryReminderCleanup');
   const expiryReminderScheduler = createExpiryReminderScheduler();
   startServerAfterRecovery({
+    initializeExpiryRemindersDatabase,
+    initializeExpiryReminderCleanupDatabase,
+    recoverPendingExpiryReminderCleanup,
     recoverPendingDocumentDeletions: documentRoutes.recoverPendingDocumentDeletions,
     recoverPendingAccountDeletions: authRoutes.recoverPendingAccountDeletions,
-    initializeExpiryRemindersDatabase,
     startListening: () => new Promise((resolve, reject) => {
       const server = app.listen(port, () => resolve(server));
       server.once('error', reject);
