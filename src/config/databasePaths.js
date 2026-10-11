@@ -25,6 +25,10 @@ const notificationsDatabasePath = resolveDatabasePath(
   'DOCUMENT_CHECKLIST_NOTIFICATIONS_DB_PATH',
   'notifications.db'
 );
+const expiryRemindersDatabasePath = resolveDatabasePath(
+  'DOCUMENT_CHECKLIST_EXPIRY_REMINDERS_DB_PATH',
+  'expiry-reminders.db'
+);
 const uploadsDirectory = path.resolve(
   process.env.DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY || path.join(dataDirectory, 'uploads')
 );
@@ -33,7 +37,8 @@ const databasePaths = [
   ['users', usersDatabasePath],
   ['documents', documentsDatabasePath],
   ['applications', applicationsDatabasePath],
-  ['notifications', notificationsDatabasePath]
+  ['notifications', notificationsDatabasePath],
+  ['expiry reminders', expiryRemindersDatabasePath]
 ];
 
 for (let index = 0; index < databasePaths.length; index += 1) {
@@ -67,6 +72,7 @@ module.exports = {
   documentsDatabasePath,
   applicationsDatabasePath,
   notificationsDatabasePath,
+  expiryRemindersDatabasePath,
   uploadsDirectory,
   prepareDatabaseFile
 };

@@ -62,6 +62,7 @@ const authRoutes = require('./routes/authRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const { startServerAfterRecovery } = require('./services/serverStartup');
 require('./config/database');
 
 const app = express();
@@ -111,15 +112,24 @@ app.use((error, request, response, next) => {
 });
 
 if (require.main === module) {
-  documentRoutes.recoverPendingDocumentDeletions()
-    .then(() => authRoutes.recoverPendingAccountDeletions())
+  const { initializeExpiryRemindersDatabase } = require('./config/expiryRemindersDatabase');
+  const { createExpiryReminderScheduler } = require('./services/expiryReminderScheduler');
+  const expiryReminderScheduler = createExpiryReminderScheduler();
+  startServerAfterRecovery({
+    recoverPendingDocumentDeletions: documentRoutes.recoverPendingDocumentDeletions,
+    recoverPendingAccountDeletions: authRoutes.recoverPendingAccountDeletions,
+    initializeExpiryRemindersDatabase,
+    startListening: () => new Promise((resolve, reject) => {
+      const server = app.listen(port, () => resolve(server));
+      server.once('error', reject);
+    }),
+    startReminderScheduler: () => expiryReminderScheduler.start()
+  })
     .then(() => {
-      app.listen(port, () => {
-        console.log(`Document Checklist API listening on http://localhost:${port}`);
-      });
+      console.log(`Document Checklist API listening on http://localhost:${port}`);
     })
     .catch((error) => {
-      console.error('Unable to recover pending document or account deletions before startup.', error);
+      console.error('Unable to complete server recovery or startup.', error);
       process.exitCode = 1;
     });
 }

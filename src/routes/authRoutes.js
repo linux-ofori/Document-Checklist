@@ -361,25 +361,39 @@ router.post('/logout', requireAuth, async (request, response, next) => {
 
 router.put('/me', requireAuth, async (request, response, next) => {
   try {
-    const profile = validateProfileUpdates(request.body || {}, request.user.preferences);
-
-    if (profile.errors.length > 0) {
-      return response.status(400).json({ error: 'Validation failed.', details: profile.errors });
-    }
-
-    if (profile.updates.email) {
-      const existingUser = await findUserByEmail(profile.updates.email);
-      if (existingUser && existingUser._id !== request.user.id) {
-        return response.status(409).json({ error: 'An account with that email already exists.' });
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const currentUser = await findUserById(request.user.id);
+      if (!currentUser || currentUser.deleting) {
+        return { kind: 'missing-user' };
       }
-    }
 
-    const user = await updateUserById(request.user.id, profile.updates);
-    if (!user) {
+      const profile = validateProfileUpdates(request.body || {}, toPublicUser(currentUser).preferences);
+      if (profile.errors.length > 0) {
+        return { kind: 'validation-error', errors: profile.errors };
+      }
+
+      if (profile.updates.email) {
+        const existingUser = await findUserByEmail(profile.updates.email);
+        if (existingUser && existingUser._id !== request.user.id) {
+          return { kind: 'email-conflict' };
+        }
+      }
+
+      const user = await updateUserById(request.user.id, profile.updates);
+      return user ? { kind: 'updated', user } : { kind: 'missing-user' };
+    });
+
+    if (result.kind === 'missing-user') {
       return response.status(404).json({ error: 'The authenticated user no longer exists.' });
     }
+    if (result.kind === 'validation-error') {
+      return response.status(400).json({ error: 'Validation failed.', details: result.errors });
+    }
+    if (result.kind === 'email-conflict') {
+      return response.status(409).json({ error: 'An account with that email already exists.' });
+    }
 
-    return response.json({ user: toPublicUser(user) });
+    return response.json({ user: toPublicUser(result.user) });
   } catch (error) {
     if (error.errorType === 'uniqueViolated') {
       return response.status(409).json({ error: 'An account with that email already exists.' });

@@ -30,6 +30,7 @@ const applicationsDatabase = require('../src/config/applicationsDatabase');
 const { uploadsDirectory } = require('../src/config/databasePaths');
 const authRoutes = require('../src/routes/authRoutes');
 const documentRoutes = require('../src/routes/documentRoutes');
+const withAccountOperationLock = require('../src/models/accountOperationLock');
 const { findDocumentsByOwnerId } = require('../src/models/documentModel');
 const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
 const {
@@ -1555,6 +1556,56 @@ test('authentication, account management, and document API', async (t) => {
       emailChecklistCompletion: false,
       securityAccount: true
     });
+
+    const accountId = profile.payload.user.id;
+    let releaseAccountLock;
+    const accountLock = new Promise((resolve) => { releaseAccountLock = resolve; });
+    const heldLock = withAccountOperationLock(accountId, () => accountLock);
+    const originalFindOne = database.findOne;
+    let authenticationLookups = 0;
+    let authenticationLookupsResolve;
+    const bothAuthenticated = new Promise((resolve) => {
+      authenticationLookupsResolve = resolve;
+    });
+    database.findOne = function countProfileAuthenticationLookups(query, callback) {
+      return originalFindOne.call(this, query, (error, user) => {
+        if (query && query._id === accountId && ++authenticationLookups === 2) {
+          authenticationLookupsResolve();
+        }
+        callback(error, user);
+      });
+    };
+
+    try {
+      const enablingDocumentExpiry = request('/api/auth/me', {
+        method: 'PUT',
+        token: primaryToken,
+        body: { preferences: { notifications: { documentExpiry: true } } }
+      });
+      const enablingApplicationUpdates = request('/api/auth/me', {
+        method: 'PUT',
+        token: primaryToken,
+        body: { preferences: { notifications: { applicationUpdates: true } } }
+      });
+      await bothAuthenticated;
+      database.findOne = originalFindOne;
+      releaseAccountLock();
+
+      const [documentExpiryUpdate, applicationUpdatesUpdate] = await Promise.all([
+        enablingDocumentExpiry,
+        enablingApplicationUpdates
+      ]);
+      await heldLock;
+      assert.equal(documentExpiryUpdate.status, 200);
+      assert.equal(applicationUpdatesUpdate.status, 200);
+      const concurrentProfile = await request('/api/auth/me', { token: primaryToken });
+      assert.equal(concurrentProfile.payload.user.preferences.notifications.documentExpiry, true);
+      assert.equal(concurrentProfile.payload.user.preferences.notifications.applicationUpdates, true);
+    } finally {
+      database.findOne = originalFindOne;
+      releaseAccountLock();
+      await heldLock;
+    }
 
     const conflictingEmail = await request('/api/auth/me', {
       method: 'PUT',

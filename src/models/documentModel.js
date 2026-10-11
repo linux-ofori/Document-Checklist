@@ -1,4 +1,5 @@
 const database = require('../config/documentsDatabase');
+const { getUtcDateDaysBefore } = require('../services/expiryReminderSchedule');
 
 const DOCUMENT_STATUS_DEFAULT = 'in-review';
 
@@ -85,6 +86,30 @@ function findDocumentsByOwnerId(ownerId) {
 
       documents.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
       return resolve(documents);
+    });
+  });
+}
+
+function findDocumentsExpiringBetweenUtcDates(startDate, endDateExclusive) {
+  getUtcDateDaysBefore(startDate, 0);
+  getUtcDateDaysBefore(endDateExclusive, 0);
+  if (startDate >= endDateExclusive) {
+    throw new RangeError('The expiry date range must have an end after its start.');
+  }
+
+  return new Promise((resolve, reject) => {
+    database.find({
+      deleting: { $ne: true },
+      expiresAt: { $gte: startDate, $lt: endDateExclusive }
+    }, (error, documents) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      documents.sort((left, right) =>
+        left.expiresAt.localeCompare(right.expiresAt) || left._id.localeCompare(right._id));
+      resolve(documents);
     });
   });
 }
@@ -197,6 +222,7 @@ module.exports = {
   findDocumentById,
   findDocumentsPendingDeletion,
   findDocumentsByOwnerId,
+  findDocumentsExpiringBetweenUtcDates,
   getDocumentApplicationIds,
   getPrimaryApplicationId,
   markDocumentDeletingById,

@@ -252,3 +252,27 @@ test('database failures use the generic server error response', async () => {
     console.error = originalConsoleError;
   }
 });
+
+test('serializes missing optional notification fields as null', async () => {
+  const owner = await registerUser();
+
+  await createNotification({
+    ownerId: owner.user.id,
+    kind: 'application',
+    title: 'Notification without references',
+    body: 'This notification has no linked application or document.',
+    severity: 'info'
+  });
+
+  const result = await request('/api/notifications', {
+    token: owner.token
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.payload.notifications.length, 1);
+
+  const [notification] = result.payload.notifications;
+  assert.equal(notification.applicationId, null);
+  assert.equal(notification.documentId, null);
+  assert.equal(notification.dueDate, null);
+});

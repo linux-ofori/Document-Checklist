@@ -1,10 +1,22 @@
 const {
+  createDocumentExpiryNotification,
   createNotification,
   deleteNotificationsByOwnerId,
   findNotificationsByOwnerId,
   markAllNotificationsRead,
   markNotificationRead
 } = require('../models/notificationModel');
+
+function createDocumentExpiryReminderNotification(occurrence) {
+  return createDocumentExpiryNotification({
+    ownerId: occurrence.ownerId,
+    documentId: occurrence.documentId,
+    documentName: occurrence.documentName,
+    expiryDate: occurrence.expiryDate,
+    leadDays: occurrence.leadDays,
+    occurrenceId: occurrence._id
+  });
+}
 
 function toPublicNotification(notification) {
   if (!notification) {
@@ -18,9 +30,9 @@ function toPublicNotification(notification) {
     body: notification.body,
     severity: notification.severity,
     isRead: notification.isRead,
-    applicationId: notification.applicationId,
-    documentId: notification.documentId,
-    dueDate: notification.dueDate,
+    applicationId: notification.applicationId ?? null,
+    documentId: notification.documentId ?? null,
+    dueDate: notification.dueDate ?? null,
     createdAt: notification.createdAt
   };
 }
@@ -56,6 +68,7 @@ function deleteAllNotifications(ownerId) {
 }
 
 module.exports = {
+  createDocumentExpiryReminderNotification,
   createRequirementCompletionNotification,
   deleteAllNotifications,
   listNotifications,
