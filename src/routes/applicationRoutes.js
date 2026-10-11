@@ -5,9 +5,13 @@ const { findUserById } = require('../models/userModel');
 const { findDocumentById, getDocumentApplicationIds } = require('../models/documentModel');
 const {
   createApplication,
+  areRequiredRequirementsComplete,
   findApplicationById,
   findApplicationsByOwnerId,
+  isValidApplicationOutcome,
+  submitApplication,
   toPublicApplication,
+  updateApplicationOutcome,
   updateApplicationRequirements
 } = require('../models/applicationModel');
 const { getProcess } = require('../config/processCatalog');
@@ -114,6 +118,24 @@ function validateRequirementInput(body) {
   return { errors, input: { status: body.status, documentId, hasDocumentId } };
 }
 
+function validateOutcomeInput(body) {
+  const errors = [];
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { errors: ['A JSON object is required.'], outcome: null };
+  }
+
+  for (const field of Object.keys(body)) {
+    if (field !== 'outcome') {
+      errors.push(`The ${field} field cannot be set.`);
+    }
+  }
+  if (!isValidApplicationOutcome(body.outcome)) {
+    errors.push('Outcome must be pending, accepted, or rejected.');
+  }
+
+  return { errors, outcome: body.outcome };
+}
+
 router.use(requireAuth);
 
 router.post('/', async (request, response, next) => {
@@ -166,6 +188,141 @@ router.get('/:id', async (request, response, next) => {
     }
 
     return response.json({ application: toPublicApplication(application) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/:id/submit', async (request, response, next) => {
+  try {
+    if (!hasValidApplicationId(request.params.id)) {
+      return response.status(400).json({ error: 'Invalid application ID.' });
+    }
+    if (request.body !== undefined
+        && (!request.body || typeof request.body !== 'object'
+          || Array.isArray(request.body) || Object.keys(request.body).length > 0)) {
+      return response.status(400).json({
+        error: 'Validation failed.',
+        details: ['Submission requests cannot include application lifecycle fields.']
+      });
+    }
+
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return { kind: 'missing-owner' };
+      }
+
+      const application = await findApplicationById(request.params.id, request.user.id);
+      if (!application) {
+        return { kind: 'missing-application' };
+      }
+
+      if (application.status === 'submitted' && application.outcome === 'pending') {
+        return { kind: 'submitted', application };
+      }
+      if (application.status !== 'in-progress' || application.outcome != null) {
+        return { kind: 'invalid-transition' };
+      }
+      if (!areRequiredRequirementsComplete(application)) {
+        const process = getProcess(application.processId);
+        const requirementStates = new Map((application.requirements || []).map((requirement) => [
+          requirement.key,
+          requirement
+        ]));
+        const incomplete = process.requirements
+          .filter((requirement) => requirement.isRequired
+            && requirementStates.get(requirement.key)?.status !== 'completed')
+          .map((requirement) => requirement.name);
+        return { kind: 'incomplete', incomplete };
+      }
+
+      const submitted = await submitApplication(application._id, request.user.id);
+      return submitted
+        ? { kind: 'submitted', application: submitted }
+        : { kind: 'invalid-transition' };
+    });
+
+    if (result.kind === 'missing-owner') {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
+    if (result.kind === 'missing-application') {
+      return response.status(404).json({ error: 'Application not found.' });
+    }
+    if (result.kind === 'invalid-transition') {
+      return response.status(409).json({
+        error: 'Application cannot be submitted from its current status.'
+      });
+    }
+    if (result.kind === 'incomplete') {
+      return response.status(409).json({
+        error: 'Required checklist items must be completed before submission.',
+        details: result.incomplete
+      });
+    }
+
+    return response.json({ application: toPublicApplication(result.application) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.patch('/:id/decision', async (request, response, next) => {
+  try {
+    if (!hasValidApplicationId(request.params.id)) {
+      return response.status(400).json({ error: 'Invalid application ID.' });
+    }
+
+    const validation = validateOutcomeInput(request.body);
+    if (validation.errors.length > 0) {
+      return response.status(400).json({ error: 'Validation failed.', details: validation.errors });
+    }
+
+    const result = await withAccountOperationLock(request.user.id, async () => {
+      const owner = await findUserById(request.user.id);
+      if (!owner || owner.deleting) {
+        return { kind: 'missing-owner' };
+      }
+
+      const application = await findApplicationById(request.params.id, request.user.id);
+      if (!application) {
+        return { kind: 'missing-application' };
+      }
+
+      const validPendingState = application.status === 'submitted'
+        && application.outcome === 'pending';
+      const validFinalState = application.status === 'completed'
+        && (application.outcome === 'accepted' || application.outcome === 'rejected');
+      if (!validPendingState && !validFinalState) {
+        return { kind: 'invalid-transition' };
+      }
+      if (application.outcome === validation.outcome) {
+        return { kind: 'updated', application };
+      }
+
+      const updated = await updateApplicationOutcome(
+        application._id,
+        request.user.id,
+        validation.outcome
+      );
+      return updated
+        ? { kind: 'updated', application: updated }
+        : { kind: 'invalid-transition' };
+    });
+
+    if (result.kind === 'missing-owner') {
+      return response.status(401).json({ error: 'The authenticated user no longer exists.' });
+    }
+    if (result.kind === 'missing-application') {
+      return response.status(404).json({ error: 'Application not found.' });
+    }
+    if (result.kind === 'invalid-transition') {
+      return response.status(409).json({
+        error: 'An institution decision can only be recorded for a submitted application.'
+      });
+    }
+
+    return response.json({ application: toPublicApplication(result.application) });
   } catch (error) {
     return next(error);
   }

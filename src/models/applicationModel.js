@@ -2,6 +2,27 @@ const { randomBytes, randomUUID } = require('node:crypto');
 const database = require('../config/applicationsDatabase');
 const { getProcess } = require('../config/processCatalog');
 
+const validApplicationOutcomes = new Set(['pending', 'accepted', 'rejected']);
+
+function isValidApplicationOutcome(outcome) {
+  return validApplicationOutcomes.has(outcome);
+}
+
+function areRequiredRequirementsComplete(application) {
+  const process = getProcess(application.processId);
+  if (!process) {
+    return false;
+  }
+
+  const requirementStates = new Map((application.requirements || []).map((requirement) => [
+    requirement.key,
+    requirement
+  ]));
+  return process.requirements
+    .filter((requirement) => requirement.isRequired)
+    .every((requirement) => requirementStates.get(requirement.key)?.status === 'completed');
+}
+
 function toPublicApplication(application) {
   if (!application) {
     return null;
@@ -19,12 +40,16 @@ function toPublicApplication(application) {
     name: application.name,
     reference: application.reference,
     status: application.status,
+    outcome: application.outcome ?? null,
     createdAt: application.createdAt,
     updatedAt: application.updatedAt,
+    submittedAt: application.submittedAt ?? null,
+    decisionRecordedAt: application.decisionRecordedAt ?? null,
     dueDate: application.dueDate,
     authority: application.authority,
     nextStep: application.nextStep,
     details: application.details,
+    readyToSubmit: areRequiredRequirementsComplete(application),
     requirements: (process ? process.requirements : []).map((definition) => {
       const state = requirementStates.get(definition.key);
       return {
@@ -50,8 +75,11 @@ function createApplication({ ownerId, processId, name, details }) {
     name: name || process.name,
     reference,
     status: 'in-progress',
+    outcome: null,
     createdAt: timestamp,
     updatedAt: timestamp,
+    submittedAt: null,
+    decisionRecordedAt: null,
     dueDate: null,
     authority: process.authority,
     nextStep: 'Start with the required documents at the top of your checklist.',
@@ -136,6 +164,62 @@ function updateApplicationRequirements(id, ownerId, requirements) {
   });
 }
 
+function submitApplication(id, ownerId) {
+  const timestamp = new Date().toISOString();
+  return new Promise((resolve, reject) => {
+    database.update(
+      { _id: id, ownerId, status: 'in-progress' },
+      {
+        $set: {
+          status: 'submitted',
+          outcome: 'pending',
+          submittedAt: timestamp,
+          decisionRecordedAt: null,
+          updatedAt: timestamp
+        }
+      },
+      { returnUpdatedDocs: true },
+      (error, count, application) => {
+        if (error) {
+          return reject(error);
+        }
+
+        return resolve(count > 0 ? application : null);
+      }
+    );
+  });
+}
+
+function updateApplicationOutcome(id, ownerId, outcome) {
+  if (!isValidApplicationOutcome(outcome)) {
+    throw new TypeError('A valid application outcome is required.');
+  }
+
+  const timestamp = new Date().toISOString();
+  const completed = outcome === 'accepted' || outcome === 'rejected';
+  return new Promise((resolve, reject) => {
+    database.update(
+      { _id: id, ownerId, status: { $in: ['submitted', 'completed'] } },
+      {
+        $set: {
+          status: completed ? 'completed' : 'submitted',
+          outcome,
+          decisionRecordedAt: completed ? timestamp : null,
+          updatedAt: timestamp
+        }
+      },
+      { returnUpdatedDocs: true },
+      (error, count, application) => {
+        if (error) {
+          return reject(error);
+        }
+
+        return resolve(count > 0 ? application : null);
+      }
+    );
+  });
+}
+
 function clearDocumentRequirementReferences(ownerId, documentId) {
   return new Promise((resolve, reject) => {
     database.find({ ownerId }, (findError, applications) => {
@@ -164,12 +248,16 @@ function deleteApplicationsByOwnerId(ownerId) {
 }
 
 module.exports = {
+  areRequiredRequirementsComplete,
   clearDocumentRequirementReferences,
   createApplication,
   deleteApplicationsByOwnerId,
   findApplicationById,
   findApplicationsByOwnerId,
   findDocumentRequirementReferences,
+  isValidApplicationOutcome,
+  submitApplication,
   toPublicApplication,
+  updateApplicationOutcome,
   updateApplicationRequirements
 };

@@ -95,10 +95,228 @@ test('application endpoints require authentication', async () => {
     ['/api/applications/app-not-real/requirements/identity-card', {
       method: 'PATCH',
       body: { status: 'completed' }
+    }],
+    ['/api/applications/app-not-real/submit', { method: 'POST' }],
+    ['/api/applications/app-not-real/decision', {
+      method: 'PATCH',
+      body: { outcome: 'accepted' }
     }]
   ]) {
     assert.equal((await request(route, options)).status, 401);
   }
+});
+
+async function completeRequiredRequirements(user, application) {
+  let updated = application;
+  for (const requirement of application.requirements.filter((entry) => entry.isRequired)) {
+    const response = await request(
+      `/api/applications/${application.id}/requirements/${requirement.key}`,
+      { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+    );
+    assert.equal(response.status, 200);
+    updated = response.payload.application;
+  }
+  return updated;
+}
+
+test('submits only when required checklist items are complete and preserves submitted status', async () => {
+  const user = await registerUser('Submission Owner', 'submission-owner@example.com');
+  const created = await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport', readyToSubmit: true, outcome: 'accepted' }
+  });
+  assert.equal(created.status, 400);
+
+  const application = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  assert.equal(application.status, 'in-progress');
+  assert.equal(application.outcome, null);
+  assert.equal(application.readyToSubmit, false);
+
+  const forgedSubmission = await request(`/api/applications/${application.id}/submit`, {
+    method: 'POST',
+    token: user.token,
+    body: { readyToSubmit: true, status: 'submitted', outcome: 'accepted' }
+  });
+  assert.equal(forgedSubmission.status, 400);
+
+  const incomplete = await request(`/api/applications/${application.id}/submit`, {
+    method: 'POST',
+    token: user.token
+  });
+  assert.equal(incomplete.status, 409);
+  assert.equal(incomplete.payload.error, 'Required checklist items must be completed before submission.');
+  assert.equal(incomplete.payload.details.length, 6);
+  assert.equal((await request(`/api/applications/${application.id}`, {
+    token: user.token
+  })).payload.application.status, 'in-progress');
+
+  const completed = await completeRequiredRequirements(user, application);
+  assert.equal(completed.status, 'in-progress');
+  assert.equal(completed.readyToSubmit, true);
+  assert.equal(
+    completed.requirements.find((requirement) => requirement.key === 'fee-receipt').status,
+    'missing'
+  );
+  for (const requirement of completed.requirements.filter((entry) => entry.isRequired)) {
+    assert.equal(requirement.documentId, null);
+  }
+
+  const persistedBeforeSubmit = await findApplicationById(application.id, user.user.id);
+  assert.equal(Object.hasOwn(persistedBeforeSubmit, 'readyToSubmit'), false);
+
+  const submitted = await request(`/api/applications/${application.id}/submit`, {
+    method: 'POST',
+    token: user.token
+  });
+  assert.equal(submitted.status, 200);
+  assert.equal(submitted.payload.application.status, 'submitted');
+  assert.equal(submitted.payload.application.outcome, 'pending');
+  assert.ok(Number.isFinite(Date.parse(submitted.payload.application.submittedAt)));
+  assert.equal(submitted.payload.application.readyToSubmit, true);
+  const submittedAt = submitted.payload.application.submittedAt;
+
+  const repeated = await request(`/api/applications/${application.id}/submit`, {
+    method: 'POST',
+    token: user.token
+  });
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.payload.application.submittedAt, submittedAt);
+
+  const edited = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'missing' } }
+  );
+  assert.equal(edited.status, 200);
+  assert.equal(edited.payload.application.status, 'submitted');
+  assert.equal(edited.payload.application.outcome, 'pending');
+  assert.equal(edited.payload.application.readyToSubmit, false);
+});
+
+test('records and corrects institution outcomes only after submission', async () => {
+  const user = await registerUser('Decision Owner', 'decision-owner@example.com');
+  const other = await registerUser('Decision Other', 'decision-other@example.com');
+  const application = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+
+  const premature = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'accepted' }
+  });
+  assert.equal(premature.status, 409);
+
+  const clientLifecycleFields = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'accepted', status: 'completed' }
+  });
+  assert.equal(clientLifecycleFields.status, 400);
+
+  const invalidOutcome = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'withdrawn' }
+  });
+  assert.equal(invalidOutcome.status, 400);
+
+  const otherSubmission = await request(`/api/applications/${application.id}/submit`, {
+    method: 'POST',
+    token: other.token
+  });
+  assert.equal(otherSubmission.status, 404);
+  const otherDecision = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: other.token,
+    body: { outcome: 'accepted' }
+  });
+  assert.equal(otherDecision.status, 404);
+  assert.equal(
+    (await request(`/api/applications/${application.id}`, { token: user.token }))
+      .payload.application.status,
+    'in-progress'
+  );
+
+  await completeRequiredRequirements(user, application);
+  const submitted = await request(`/api/applications/${application.id}/submit`, {
+    method: 'POST',
+    token: user.token
+  });
+  assert.equal(submitted.status, 200);
+
+  const pending = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'pending' }
+  });
+  assert.equal(pending.status, 200);
+  assert.equal(pending.payload.application.status, 'submitted');
+  assert.equal(pending.payload.application.outcome, 'pending');
+  assert.equal(pending.payload.application.decisionRecordedAt, null);
+
+  const accepted = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'accepted' }
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.payload.application.status, 'completed');
+  assert.equal(accepted.payload.application.outcome, 'accepted');
+  assert.ok(Number.isFinite(Date.parse(accepted.payload.application.decisionRecordedAt)));
+  const decisionRecordedAt = accepted.payload.application.decisionRecordedAt;
+
+  const repeatedAccepted = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'accepted' }
+  });
+  assert.equal(repeatedAccepted.status, 200);
+  assert.equal(repeatedAccepted.payload.application.status, 'completed');
+  assert.equal(repeatedAccepted.payload.application.outcome, 'accepted');
+  assert.equal(repeatedAccepted.payload.application.decisionRecordedAt, decisionRecordedAt);
+
+  const checklistEditAfterDecision = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'missing' } }
+  );
+  assert.equal(checklistEditAfterDecision.status, 200);
+  assert.equal(checklistEditAfterDecision.payload.application.status, 'completed');
+  assert.equal(checklistEditAfterDecision.payload.application.outcome, 'accepted');
+
+  const rejected = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'rejected' }
+  });
+  assert.equal(rejected.status, 200);
+  assert.equal(rejected.payload.application.status, 'completed');
+  assert.equal(rejected.payload.application.outcome, 'rejected');
+
+  const pendingAgain = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'pending' }
+  });
+  assert.equal(pendingAgain.status, 200);
+  assert.equal(pendingAgain.payload.application.status, 'submitted');
+  assert.equal(pendingAgain.payload.application.outcome, 'pending');
+  assert.equal(pendingAgain.payload.application.decisionRecordedAt, null);
+
+  const completedAgain = await request(`/api/applications/${application.id}/decision`, {
+    method: 'PATCH',
+    token: user.token,
+    body: { outcome: 'accepted' }
+  });
+  assert.equal(completedAgain.status, 200);
+  assert.equal(completedAgain.payload.application.status, 'completed');
+  assert.equal(completedAgain.payload.application.outcome, 'accepted');
 });
 
 test('creates applications from static process templates and rejects client-controlled fields', async () => {
