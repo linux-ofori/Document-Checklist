@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
+const { withStableUserIdentityLocks } = require('../models/emailIdentityLock');
 const { removeStoredFile } = require('../config/fileStorage');
 const { deleteDocumentsByOwnerId, findDocumentsByOwnerId } = require('../models/documentModel');
 const { deleteApplicationsByOwnerId } = require('../models/applicationModel');
@@ -139,12 +140,7 @@ function validateProfileUpdates(body, currentPreferences) {
   }
 
   if (Object.prototype.hasOwnProperty.call(body, 'email')) {
-    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
-    if (!emailPattern.test(email) || email.length > 254) {
-      errors.push('A valid email address is required.');
-    } else {
-      updates.email = email;
-    }
+    errors.push('Email changes require the verified email-change flow.');
   }
 
   if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
@@ -370,13 +366,6 @@ router.put('/me', requireAuth, async (request, response, next) => {
         return { kind: 'validation-error', errors: profile.errors };
       }
 
-      if (profile.updates.email) {
-        const existingUser = await findUserByEmail(profile.updates.email);
-        if (existingUser && existingUser._id !== request.user.id) {
-          return { kind: 'email-conflict' };
-        }
-      }
-
       const user = await updateUserById(request.user.id, profile.updates);
       return user ? { kind: 'updated', user } : { kind: 'missing-user' };
     });
@@ -387,10 +376,6 @@ router.put('/me', requireAuth, async (request, response, next) => {
     if (result.kind === 'validation-error') {
       return response.status(400).json({ error: 'Validation failed.', details: result.errors });
     }
-    if (result.kind === 'email-conflict') {
-      return response.status(409).json({ error: 'An account with that email already exists.' });
-    }
-
     return response.json({ user: toPublicUser(result.user) });
   } catch (error) {
     if (error.errorType === 'uniqueViolated') {
@@ -418,19 +403,12 @@ router.post('/change-password', passwordChangeRateLimit, requireAuth, async (req
     }
 
     const newPasswordHash = await bcrypt.hash(passwordChange.newPassword, 12);
-    const updatedUser = await withAccountOperationLock(request.user.id, async () => {
-      const currentUser = await findUserById(request.user.id);
-      const currentTokenVersion = currentUser && Number.isSafeInteger(currentUser.tokenVersion)
-        ? currentUser.tokenVersion
-        : 0;
-      if (!currentUser
-          || currentUser.deleting
-          || currentUser.password !== user.password
-          || currentTokenVersion !== request.authTokenVersion) {
-        return null;
-      }
-      return changeUserPasswordById(request.user.id, user.password, newPasswordHash);
-    });
+    const updatedUser = await changeUserPasswordById(
+      request.user.id,
+      user.password,
+      newPasswordHash,
+      request.authTokenVersion
+    );
     if (!updatedUser) {
       return response.status(401).json({ error: 'Current password is incorrect or account is unavailable.' });
     }
@@ -446,10 +424,11 @@ router.post('/change-password', passwordChangeRateLimit, requireAuth, async (req
 
 router.delete('/me', requireAuth.allowDeletingAccount, async (request, response, next) => {
   try {
-    const deleted = await withAccountOperationLock(
-      request.user.id,
-      () => completeAccountDeletion(request.user.id)
-    );
+    const deleted = await withStableUserIdentityLocks({
+      userId: request.user.id,
+      findUserById,
+      operation: (user) => user ? completeAccountDeletion(request.user.id) : false
+    });
     if (!deleted) {
       return response.status(404).json({ error: 'The authenticated user no longer exists.' });
     }

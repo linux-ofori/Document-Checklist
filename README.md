@@ -31,7 +31,7 @@ The file-backed NeDB databases are intended for one Node.js process using a priv
 
 Uploaded document files are stored privately under `data/uploads/` by default. `DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY` can select another private local directory; it is resolved once at startup and is never controlled by request data. Keep that directory persistent and access-restricted.
 
-Email notifications are disabled by default. Phase 1 provides configuration and a provider-neutral service boundary only; it does not send real email. `EMAIL_ENABLED` accepts `true` or `false` and defaults to `false`. If enabled, `EMAIL_FROM` must be a valid email address; `EMAIL_REPLY_TO` is optional and, when set, must also be valid. A real provider, email verification, outbox, and worker are future phases. The `emailChecklistCompletion` notification preference is an explicit opt-in and defaults to `false`.
+Email notifications are disabled by default. The provider-neutral adapter is configured but does not send real email. `EMAIL_ENABLED` accepts `true` or `false` and defaults to `false`. If enabled, `EMAIL_FROM` must be a valid email address; `EMAIL_REPLY_TO` is optional and, when set, must also be valid. A real provider, verification/recovery delivery flows, durable outbox, and worker remain future work. The `emailChecklistCompletion` notification preference is an explicit opt-in and defaults to `false`.
 
 The Express app applies Helmet security headers before JSON parsing and API routes. Since this backend serves JSON rather than browser pages, Helmet's Content Security Policy header is disabled; a custom CSP is not needed for the API. If browser pages are added to this server later, define a CSP based on their actual scripts, styles, and resources.
 
@@ -70,7 +70,7 @@ The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There
 | Field | Rules |
 |---|---|
 | `name` for accounts | Required on registration; 2–100 characters after trimming. Optional on profile updates. |
-| `email` | Required on registration and login; valid email format, at most 254 characters. Trimmed and lowercased. Optional on profile updates. |
+| `email` | Required on registration and login; valid email format, at most 254 characters. Trimmed and lowercased. Active email cannot be changed through profile updates; it requires the verified pending-email flow. |
 | `password` | Required on registration and login; 8–128 characters and at most 72 UTF-8 bytes. |
 | Registration `phone` | Optional; trimmed and must match `^[+()-\s\d]{7,20}$` when non-empty. Omitted or blank values are stored as `null`. |
 | Document `name` | Required on create; 1–150 characters after trimming. Optional on update. |
@@ -89,7 +89,9 @@ The default JWT expiration is one day (`JWT_EXPIRES_IN` defaults to `1d`). There
 | Requirement `documentId` | Optional on update; must identify a document owned by the caller and linked to that application; may be `null` to clear. |
 | Document upload | Multipart upload accepts one PDF, JPG/JPEG, or PNG file, up to and including 5 MiB (5 × 1024 × 1024 bytes). |
 
-Profile updates must include at least one of `name` or `email`. Document updates must include at least one editable document field. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs, owner fields, timestamps, upload metadata, and storage information. Registration and login validate their named fields but do not reject additional fields.
+Profile updates must include at least one editable profile field. Direct active-email changes are rejected until the verified pending-email flow is implemented. Document updates must include at least one editable document field. These update endpoints reject unknown fields. Document create/update also reject client-supplied IDs, owner fields, timestamps, upload metadata, and storage information. Registration and login validate their named fields but do not reject additional fields.
+
+Email verification, pending-email changes, and password-recovery routes are not implemented yet. New password-based accounts and legacy accounts without `emailVerifiedAt` are treated as unverified; unverified accounts may still log in and use the application. New Google-only accounts are marked verified only from Google's validated `email_verified: true` claim. Linking Google to an existing local account does not change its verification state. Challenge tokens are stored only as hashes and expire after 24 hours for email verification or 30 minutes for password reset. Active and pending email identity coordination uses an in-process normalized-email lock; this supports the documented single-process deployment and does not coordinate multiple backend processes.
 
 ### Authentication endpoints
 
@@ -103,7 +105,7 @@ The flow uses three endpoints:
 - `GET /api/auth/google/callback` is the fixed provider redirect. After successful verification, it redirects to the configured frontend callback with a short-lived ticket in the fragment; failures use a generic `google_sign_in_failed` fragment value.
 - `POST /api/auth/google/exchange` with `{ "ticket": "..." }` consumes the ticket and returns the same `{ "user": ..., "token": "..." }` session shape as local login. Expired or previously consumed tickets return `410 Gone`.
 
-To explicitly link Google to a local-password account, call the authorization endpoint with a valid bearer token and `{ "intent": "link", "currentPassword": "..." }`. Linking requires the current password, the authenticated session must remain valid through the flow, and an identity already linked elsewhere is rejected. A matching email address never links accounts automatically. Google-only users have no local password and cannot use local-password login or this password-confirmed linking flow. Email verification, password recovery, unlinking, and adding a local password are outside this foundation.
+To explicitly link Google to a local-password account, call the authorization endpoint with a valid bearer token and `{ "intent": "link", "currentPassword": "..." }`. Linking requires the current password, the authenticated session must remain valid through the flow, and an identity already linked elsewhere is rejected. A matching email address never links accounts automatically. Google-only users have no local password and cannot use local-password login or this password-confirmed linking flow. Email-verification and password-recovery routes, unlinking, and adding a local password remain outside this foundation.
 
 OAuth transactions and exchange tickets are held in memory. Run one backend process only; pending transactions and tickets are lost on restart and are not shared across multiple instances.
 
@@ -191,16 +193,15 @@ Possible errors: `401` authentication error, `404` authenticated user no longer 
 
 **Authentication:** Required. Updates the account associated with the Bearer token.
 
-Provide one or both optional fields, `name` and `email`; at least one must be present. Their validation rules are in the summary above. Other fields are rejected.
+Profile updates accept editable `name`, `phone`, and `preferences` fields. The `email` field is rejected; an active email can only change after the verified pending-email flow is implemented. Unknown fields are rejected.
 
 ```json
 {
-	"name": "Updated Name",
-	"email": "updated@example.com"
+	"name": "Updated Name"
 }
 ```
 
-**Success:** `200 OK`, returning `{ "user": { ... } }` with the updated sanitized user. Possible errors: `400` validation error, `401` authentication error, `404` authenticated user no longer exists, `409` duplicate email, or a shared server error below.
+**Success:** `200 OK`, returning `{ "user": { ... } }` with the updated sanitized user. Possible errors: `400` validation error (including direct email changes), `401` authentication error, `404` authenticated user no longer exists, or a shared server error below.
 
 #### `DELETE /api/auth/me`
 

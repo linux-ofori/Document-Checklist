@@ -190,7 +190,7 @@ function createGoogleOAuthService({
 
     return {
       transaction,
-      identity: { subject: payload.sub, email, name }
+      identity: { subject: payload.sub, email, name, emailVerified: true }
     };
   }
 

@@ -300,6 +300,19 @@ function assertSanitizedUser(user) {
   assert.equal(Object.hasOwn(user, 'passwordHash'), false);
   assert.equal(Object.hasOwn(user, 'tokenVersion'), false);
   assert.equal(Object.hasOwn(user, 'deleting'), false);
+  for (const field of [
+    'emailVerifiedAt',
+    'emailVerificationTokenHash',
+    'emailVerificationExpiresAt',
+    'emailVerificationEmail',
+    'pendingEmail',
+    'pendingEmailTokenHash',
+    'pendingEmailExpiresAt',
+    'passwordResetTokenHash',
+    'passwordResetExpiresAt'
+  ]) {
+    assert.equal(Object.hasOwn(user, field), false);
+  }
 }
 
 test('public user serialization allows only intended user fields', () => {
@@ -312,7 +325,16 @@ test('public user serialization allows only intended user fields', () => {
     deleting: true,
     password: 'stored-password',
     passwordHash: 'stored-hash',
-    internalSecret: 'must-not-be-returned'
+    internalSecret: 'must-not-be-returned',
+    emailVerifiedAt: '2026-10-06T00:00:00.000Z',
+    emailVerificationTokenHash: 'internal-hash',
+    emailVerificationExpiresAt: 1,
+    emailVerificationEmail: 'public@example.com',
+    pendingEmail: 'pending@example.com',
+    pendingEmailTokenHash: 'pending-hash',
+    pendingEmailExpiresAt: 2,
+    passwordResetTokenHash: 'reset-hash',
+    passwordResetExpiresAt: 3
   });
 
   assert.deepEqual(publicUser, {
@@ -1922,13 +1944,12 @@ test('authentication, account management, and document API', async (t) => {
       method: 'PUT',
       token: primaryToken,
       body: {
-        email: ' RENAMED@example.com ',
         phone: '  +233 24 123 4567  ',
         preferences: { notifications: { documentExpiry: false } }
       }
     });
     assert.equal(profileUpdate.status, 200);
-    assert.equal(profileUpdate.payload.user.email, 'renamed@example.com');
+    assert.equal(profileUpdate.payload.user.email, 'primary@example.com');
     assert.equal(profileUpdate.payload.user.phone, '+233 24 123 4567');
     assert.deepEqual(profileUpdate.payload.user.preferences, {
       notifications: {
@@ -1939,6 +1960,16 @@ test('authentication, account management, and document API', async (t) => {
       }
     });
     assertSanitizedUser(profileUpdate.payload.user);
+
+    const emailChange = await request('/api/auth/me', {
+      method: 'PUT',
+      token: primaryToken,
+      body: { email: ' RENAMED@example.com ' }
+    });
+    assert.equal(emailChange.status, 400);
+    assert.deepEqual(emailChange.payload.details, [
+      'Email changes require the verified email-change flow.'
+    ]);
 
     const omittedPhoneUpdate = await request('/api/auth/me', {
       method: 'PUT',
@@ -2140,12 +2171,12 @@ test('authentication, account management, and document API', async (t) => {
       token: primaryToken,
       body: { email: 'legacy-account@example.com' }
     });
-    assert.equal(conflictingEmail.status, 409);
+    assert.equal(conflictingEmail.status, 400);
 
     assertSanitizedUser(registration.payload.user);
     const login = await request('/api/auth/login', {
       method: 'POST',
-      body: { email: 'renamed@example.com', password: passwordAtBcryptLimit }
+      body: { email: 'primary@example.com', password: passwordAtBcryptLimit }
     });
     assert.equal(login.status, 200);
     assertSanitizedUser(login.payload.user);

@@ -74,6 +74,7 @@ test('creates authorization transactions with state, nonce, and an S256 PKCE cha
   assert.equal(result.identity.subject, 'google-subject-123');
   assert.equal(result.identity.email, 'person@example.test');
   assert.equal(result.identity.name, 'Person Example');
+  assert.equal(result.identity.emailVerified, true);
   assert.equal(clientState.tokenParameters.code, 'authorization-code');
   assert.equal(clientState.tokenParameters.codeVerifier.length, 43);
   assert.equal(clientState.verificationParameters.audience, configuration.clientId);

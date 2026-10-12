@@ -19,6 +19,17 @@ function initializeUserDatabase() {
         unique: true,
         sparse: true
       });
+      for (const fieldName of [
+        'emailVerificationTokenHash',
+        'pendingEmailTokenHash',
+        'passwordResetTokenHash'
+      ]) {
+        await database.ensureIndexAsync({
+          fieldName,
+          unique: true,
+          sparse: true
+        });
+      }
     })();
   }
 

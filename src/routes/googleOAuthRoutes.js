@@ -138,7 +138,8 @@ function createGoogleOAuthRouter({
       user = await createGoogleUser({
         name: identity.name,
         email: identity.email,
-        googleSubject: identity.subject
+        googleSubject: identity.subject,
+        emailVerified: identity.emailVerified === true
       });
     } catch (error) {
       if (error.errorType !== 'uniqueViolated') {

@@ -46,7 +46,8 @@ const config = {
 const identity = {
   subject: 'google-subject-route-test',
   email: 'google.user@example.test',
-  name: 'Google User'
+  name: 'Google User',
+  emailVerified: true
 };
 const temporaryDirectoryParent = path.resolve(os.tmpdir());
 let server;
@@ -198,6 +199,7 @@ test('creates a Google-only account and returns a normal backend session through
   const googleUser = await findUserByGoogleSubject(identity.subject);
   assert.ok(googleUser);
   assert.equal(Object.hasOwn(googleUser, 'password'), false);
+  assert.ok(googleUser.emailVerifiedAt);
 
   const replayResponse = await fetch(`${baseUrl}/api/auth/google/exchange`, {
     method: 'POST',
@@ -266,6 +268,7 @@ test('requires current-password confirmation for explicit linking and binds the 
   const linkedUser = await findUserByGoogleSubject('linked-google-subject');
   assert.equal(linkedUser._id, localUser._id);
   assert.equal(linkedUser.email, localUser.email);
+  assert.equal(linkedUser.emailVerifiedAt, undefined);
 });
 
 test('rejects linking an identity already owned by another account', async () => {
