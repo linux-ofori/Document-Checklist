@@ -6,6 +6,7 @@ const path = require('node:path');
 const { after, test } = require('node:test');
 const { prepareDatabaseFile } = require('../src/config/databasePaths');
 const { createCorsOptions } = require('../src/config/cors');
+const { loadEmailConfig } = require('../src/config/email');
 const { loadGoogleOAuthConfig } = require('../src/config/googleOAuth');
 
 const temporaryWorkingDirectory = fs.mkdtempSync(
@@ -44,6 +45,7 @@ function isolatedEnvironment() {
   delete environment.CORS_ALLOWED_ORIGINS;
   delete environment.JWT_EXPIRES_IN;
   environment.GOOGLE_OAUTH_ENABLED = 'false';
+  environment.EMAIL_ENABLED = 'false';
   environment.GOOGLE_OAUTH_RATE_LIMIT_MAX = '20';
   environment.GOOGLE_OAUTH_RATE_LIMIT_WINDOW_MS = '900000';
   for (const variable of rateLimitEnvironmentVariables) {
@@ -84,12 +86,13 @@ function startWithJwtExpiresIn(expiresIn) {
   return startWithEnvironment(environment);
 }
 
-function startWithEmailConfig({ enabled, from, replyTo } = {}) {
+function startWithEmailConfig({ enabled, from, replyTo, verificationUrl } = {}) {
   const environment = isolatedEnvironment();
   for (const [name, value] of [
     ['EMAIL_ENABLED', enabled],
     ['EMAIL_FROM', from],
-    ['EMAIL_REPLY_TO', replyTo]
+    ['EMAIL_REPLY_TO', replyTo],
+    ['FRONTEND_EMAIL_VERIFICATION_URL', verificationUrl]
   ]) {
     if (value === undefined) {
       delete environment[name];
@@ -296,6 +299,7 @@ test('email is disabled by default and when explicitly disabled', () => {
   assert.equal(startWithEmailConfig().status, 0);
   assert.equal(startWithEmailConfig({ enabled: 'false' }).status, 0);
   assert.equal(startWithEmailConfig({ enabled: 'false', from: '', replyTo: '' }).status, 0);
+  assert.equal(loadEmailConfig({}).frontendVerificationUrl, 'http://localhost:5173/verify-email');
 });
 
 test('accepts enabled email configuration with a valid sender and optional reply-to', () => {
@@ -307,9 +311,53 @@ test('accepts enabled email configuration with a valid sender and optional reply
       replyTo: 'support@example.test'
     }
   ]) {
-    const result = startWithEmailConfig(options);
-    assert.equal(result.status, 0, result.stderr);
+    const config = loadEmailConfig({
+      EMAIL_ENABLED: options.enabled,
+      EMAIL_FROM: options.from,
+      EMAIL_REPLY_TO: options.replyTo,
+      NODE_ENV: 'development'
+    });
+    assert.equal(config.enabled, true);
+    assert.equal(config.frontendVerificationUrl, 'http://localhost:5173/verify-email');
   }
+});
+
+test('validates the configured frontend verification URL for production', () => {
+  const configuration = {
+    NODE_ENV: 'production',
+    EMAIL_ENABLED: 'true',
+    EMAIL_FROM: 'notifications@example.test',
+    FRONTEND_EMAIL_VERIFICATION_URL: 'https://frontend.example.test/verify-email',
+    CORS_ALLOWED_ORIGINS: 'https://frontend.example.test'
+  };
+  assert.equal(
+    loadEmailConfig(configuration).frontendVerificationUrl,
+    configuration.FRONTEND_EMAIL_VERIFICATION_URL
+  );
+
+  for (const invalidUrl of [
+    undefined,
+    'http://frontend.example.test/verify-email',
+    'https://frontend.example.test/wrong',
+    'https://frontend.example.test/verify-email?token=existing',
+    'https://frontend.example.test/verify-email#fragment',
+    'https://user:password@frontend.example.test/verify-email',
+    'https://other.example.test/verify-email'
+  ]) {
+    assert.throws(() => loadEmailConfig({
+      ...configuration,
+      FRONTEND_EMAIL_VERIFICATION_URL: invalidUrl
+    }));
+  }
+});
+
+test('does not start email delivery without an injected provider adapter', () => {
+  const result = startWithEmailConfig({
+    enabled: 'true',
+    from: 'notifications@example.test'
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /An email provider is required when email is enabled/);
 });
 
 test('rejects missing or invalid enabled email configuration', () => {

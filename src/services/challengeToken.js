@@ -1,9 +1,12 @@
 const crypto = require('node:crypto');
 
-function createChallengeToken() {
-  const token = crypto.randomBytes(32).toString('base64url');
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  return { token, tokenHash };
+function hashChallengeToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-module.exports = { createChallengeToken };
+function createChallengeToken() {
+  const token = crypto.randomBytes(32).toString('base64url');
+  return { token, tokenHash: hashChallengeToken(token) };
+}
+
+module.exports = { createChallengeToken, hashChallengeToken };

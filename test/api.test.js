@@ -15,6 +15,7 @@ const passwordAtBcryptLimit = 'a'.repeat(72);
 process.env.JWT_SECRET = testJwtSecret;
 process.env.NODE_ENV = 'test';
 process.env.GOOGLE_OAUTH_ENABLED = 'false';
+process.env.EMAIL_ENABLED = 'false';
 process.env.GOOGLE_OAUTH_RATE_LIMIT_MAX = '20';
 process.env.GOOGLE_OAUTH_RATE_LIMIT_WINDOW_MS = '900000';
 delete process.env.TRUSTED_PROXY_IPS;

@@ -11,7 +11,13 @@ if (jwtSecret.trim() === 'replace-this-with-a-random-secret-at-least-32-characte
 }
 
 const { loadEmailConfig } = require('./config/email');
-loadEmailConfig();
+const emailConfig = loadEmailConfig();
+const { createEmailService } = require('./services/emailService');
+const emailService = createEmailService({
+  enabled: emailConfig.enabled,
+  from: emailConfig.from,
+  replyTo: emailConfig.replyTo
+});
 const { loadGoogleOAuthConfig } = require('./config/googleOAuth');
 loadGoogleOAuthConfig();
 
@@ -61,6 +67,11 @@ const cors = require('cors');
 const helmet = require('helmet');
 const { createCorsOptions } = require('./config/cors');
 const authRoutes = require('./routes/authRoutes');
+const { createEmailVerificationRouter } = require('./routes/emailVerificationRoutes');
+const emailVerificationRoutes = createEmailVerificationRouter({
+  emailService,
+  frontendVerificationUrl: emailConfig.frontendVerificationUrl
+});
 const googleOAuthRoutes = require('./routes/googleOAuthRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
@@ -90,6 +101,7 @@ app.use((request, response, next) => {
   userDatabaseInitialization.then(() => next()).catch(next);
 });
 app.use('/api/auth', authRoutes);
+app.use('/api/auth', emailVerificationRoutes);
 app.use('/api/auth/google', googleOAuthRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/documents', documentRoutes);

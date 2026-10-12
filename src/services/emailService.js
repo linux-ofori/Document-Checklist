@@ -96,7 +96,7 @@ function createEmailService({ enabled = false, from = null, replyTo = null, prov
     }
   }
 
-  return { sendEmail };
+  return { enabled, sendEmail };
 }
 
 module.exports = { createEmailService };

@@ -525,12 +525,20 @@ async function consumePasswordResetChallenge(tokenHash, newPasswordHash, now = D
   });
 }
 
-function invalidateEmailVerificationChallenge(userId) {
+function invalidateEmailVerificationChallenge(userId, tokenHash) {
+  if (!tokenHashIsValid(tokenHash)) {
+    throw new TypeError('A valid email verification token hash is required.');
+  }
+
   return withStableUserIdentityLocks({
     userId,
     findUserById,
     operation: (user) => user && !user.deleting
-      ? updateOne({ _id: userId, deleting: { $ne: true } }, {
+      ? updateOne({
+        _id: userId,
+        emailVerificationTokenHash: tokenHash,
+        deleting: { $ne: true }
+      }, {
         $unset: Object.fromEntries(verificationTokenFields.map((field) => [field, true]))
       })
       : null
