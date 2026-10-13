@@ -18,7 +18,11 @@ const rateLimitEnvironmentVariables = [
   'LOGIN_RATE_LIMIT_MAX',
   'LOGIN_RATE_LIMIT_WINDOW_MS',
   'REGISTRATION_RATE_LIMIT_MAX',
-  'REGISTRATION_RATE_LIMIT_WINDOW_MS'
+  'REGISTRATION_RATE_LIMIT_WINDOW_MS',
+  'PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX',
+  'PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW_MS',
+  'PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX',
+  'PASSWORD_RESET_CONFIRM_RATE_LIMIT_WINDOW_MS'
 ];
 
 after(() => {
@@ -92,7 +96,8 @@ function startWithEmailConfig({ enabled, from, replyTo, verificationUrl } = {}) 
     ['EMAIL_ENABLED', enabled],
     ['EMAIL_FROM', from],
     ['EMAIL_REPLY_TO', replyTo],
-    ['FRONTEND_EMAIL_VERIFICATION_URL', verificationUrl]
+    ['FRONTEND_EMAIL_VERIFICATION_URL', verificationUrl],
+    ['FRONTEND_PASSWORD_RESET_URL', 'http://localhost:5173/reset-password']
   ]) {
     if (value === undefined) {
       delete environment[name];
@@ -300,6 +305,7 @@ test('email is disabled by default and when explicitly disabled', () => {
   assert.equal(startWithEmailConfig({ enabled: 'false' }).status, 0);
   assert.equal(startWithEmailConfig({ enabled: 'false', from: '', replyTo: '' }).status, 0);
   assert.equal(loadEmailConfig({}).frontendVerificationUrl, 'http://localhost:5173/verify-email');
+  assert.equal(loadEmailConfig({}).frontendPasswordResetUrl, 'http://localhost:5173/reset-password');
 });
 
 test('accepts enabled email configuration with a valid sender and optional reply-to', () => {
@@ -319,6 +325,7 @@ test('accepts enabled email configuration with a valid sender and optional reply
     });
     assert.equal(config.enabled, true);
     assert.equal(config.frontendVerificationUrl, 'http://localhost:5173/verify-email');
+    assert.equal(config.frontendPasswordResetUrl, 'http://localhost:5173/reset-password');
   }
 });
 
@@ -328,6 +335,7 @@ test('validates the configured frontend verification URL for production', () => 
     EMAIL_ENABLED: 'true',
     EMAIL_FROM: 'notifications@example.test',
     FRONTEND_EMAIL_VERIFICATION_URL: 'https://frontend.example.test/verify-email',
+    FRONTEND_PASSWORD_RESET_URL: 'https://frontend.example.test/reset-password',
     CORS_ALLOWED_ORIGINS: 'https://frontend.example.test'
   };
   assert.equal(
@@ -347,6 +355,20 @@ test('validates the configured frontend verification URL for production', () => 
     assert.throws(() => loadEmailConfig({
       ...configuration,
       FRONTEND_EMAIL_VERIFICATION_URL: invalidUrl
+    }));
+  }
+
+  for (const invalidUrl of [
+    undefined,
+    'http://frontend.example.test/reset-password',
+    'https://frontend.example.test/wrong',
+    'https://frontend.example.test/reset-password?token=existing',
+    'https://frontend.example.test/reset-password#fragment',
+    'https://other.example.test/reset-password'
+  ]) {
+    assert.throws(() => loadEmailConfig({
+      ...configuration,
+      FRONTEND_PASSWORD_RESET_URL: invalidUrl
     }));
   }
 });
@@ -399,13 +421,17 @@ test('uses rate-limit defaults when unset and accepts positive safe integer over
     LOGIN_RATE_LIMIT_MAX: '8',
     LOGIN_RATE_LIMIT_WINDOW_MS: '60000',
     REGISTRATION_RATE_LIMIT_MAX: '3',
-    REGISTRATION_RATE_LIMIT_WINDOW_MS: '120000'
+    REGISTRATION_RATE_LIMIT_WINDOW_MS: '120000',
+    PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX: '4',
+    PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW_MS: '180000',
+    PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX: '8',
+    PASSWORD_RESET_CONFIRM_RATE_LIMIT_WINDOW_MS: '240000'
   });
   const configured = startWithEnvironment(environment);
   assert.equal(configured.status, 0, configured.stderr);
 });
 
-test('fails startup for invalid login and registration rate-limit values', () => {
+test('fails startup for invalid authentication and password reset rate-limit values', () => {
   for (const variable of rateLimitEnvironmentVariables) {
     for (const value of ['0', '-1', '1.5', 'not-a-number', 'Infinity', '9007199254740992']) {
       const environment = isolatedEnvironment();

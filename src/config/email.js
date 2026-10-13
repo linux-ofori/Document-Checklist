@@ -1,6 +1,7 @@
 const emailAddressPattern = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 const { configuredCorsOrigins } = require('./cors');
 const localVerificationUrl = 'http://localhost:5173/verify-email';
+const localPasswordResetUrl = 'http://localhost:5173/reset-password';
 
 function isValidEmailAddress(value) {
   return typeof value === 'string'
@@ -39,49 +40,68 @@ function loadEmailConfig(environment = process.env) {
     throw new Error('EMAIL_REPLY_TO must be a valid email address without newlines.');
   }
 
-  const configuredVerificationUrl = environment.FRONTEND_EMAIL_VERIFICATION_URL;
-  const rawVerificationUrl = configuredVerificationUrl === undefined
-    && environment.NODE_ENV !== 'production'
-    ? localVerificationUrl
-    : configuredVerificationUrl;
-  let frontendVerificationUrl = null;
+  function configuredFrontendUrl(environmentVariable, pathname, localDefault) {
+    const configuredUrl = environment[environmentVariable];
+    const rawUrl = configuredUrl === undefined && environment.NODE_ENV !== 'production'
+      ? localDefault
+      : configuredUrl;
+    if (rawUrl === undefined) {
+      if (enabled) {
+        throw new Error(`${environmentVariable} must be configured when email is enabled in production.`);
+      }
+      return null;
+    }
 
-  if (rawVerificationUrl !== undefined) {
-    let parsedVerificationUrl;
+    let parsedUrl;
     try {
-      parsedVerificationUrl = new URL(rawVerificationUrl);
+      parsedUrl = new URL(rawUrl);
     } catch {
-      throw new Error('FRONTEND_EMAIL_VERIFICATION_URL must be an absolute verification URL.');
+      throw new Error(`${environmentVariable} must be an absolute frontend URL.`);
     }
 
-    if (typeof rawVerificationUrl !== 'string'
-        || !['http:', 'https:'].includes(parsedVerificationUrl.protocol)
-        || !parsedVerificationUrl.hostname
-        || parsedVerificationUrl.username
-        || parsedVerificationUrl.password
-        || parsedVerificationUrl.pathname !== '/verify-email'
-        || parsedVerificationUrl.search
-        || parsedVerificationUrl.hash
-        || parsedVerificationUrl.toString() !== rawVerificationUrl) {
-      throw new Error('FRONTEND_EMAIL_VERIFICATION_URL must be an exact /verify-email URL without query or fragment.');
+    if (typeof rawUrl !== 'string'
+        || !['http:', 'https:'].includes(parsedUrl.protocol)
+        || !parsedUrl.hostname
+        || parsedUrl.username
+        || parsedUrl.password
+        || parsedUrl.pathname !== pathname
+        || parsedUrl.search
+        || parsedUrl.hash
+        || parsedUrl.toString() !== rawUrl) {
+      throw new Error(`${environmentVariable} must be an exact ${pathname} URL without query or fragment.`);
     }
-    if (environment.NODE_ENV === 'production' && parsedVerificationUrl.protocol !== 'https:') {
-      throw new Error('FRONTEND_EMAIL_VERIFICATION_URL must use HTTPS in production.');
+    if (environment.NODE_ENV === 'production' && parsedUrl.protocol !== 'https:') {
+      throw new Error(`${environmentVariable} must use HTTPS in production.`);
     }
-    if (parsedVerificationUrl.protocol !== 'https:'
-        && !new Set(['localhost', '127.0.0.1', '[::1]']).has(parsedVerificationUrl.hostname)) {
-      throw new Error('FRONTEND_EMAIL_VERIFICATION_URL must use HTTPS except for local development.');
+    if (parsedUrl.protocol !== 'https:'
+        && !new Set(['localhost', '127.0.0.1', '[::1]']).has(parsedUrl.hostname)) {
+      throw new Error(`${environmentVariable} must use HTTPS except for local development.`);
     }
-    if (!configuredCorsOrigins(environment).includes(parsedVerificationUrl.origin)) {
-      throw new Error('FRONTEND_EMAIL_VERIFICATION_URL origin must be included in CORS_ALLOWED_ORIGINS.');
+    if (!configuredCorsOrigins(environment).includes(parsedUrl.origin)) {
+      throw new Error(`${environmentVariable} origin must be included in CORS_ALLOWED_ORIGINS.`);
     }
 
-    frontendVerificationUrl = parsedVerificationUrl.toString();
-  } else if (enabled) {
-    throw new Error('FRONTEND_EMAIL_VERIFICATION_URL must be configured when email is enabled in production.');
+    return parsedUrl.toString();
   }
 
-  return { enabled, from: from || null, replyTo: replyTo || null, frontendVerificationUrl };
+  const frontendVerificationUrl = configuredFrontendUrl(
+    'FRONTEND_EMAIL_VERIFICATION_URL',
+    '/verify-email',
+    localVerificationUrl
+  );
+  const frontendPasswordResetUrl = configuredFrontendUrl(
+    'FRONTEND_PASSWORD_RESET_URL',
+    '/reset-password',
+    localPasswordResetUrl
+  );
+
+  return {
+    enabled,
+    from: from || null,
+    replyTo: replyTo || null,
+    frontendVerificationUrl,
+    frontendPasswordResetUrl
+  };
 }
 
 module.exports = { isValidEmailAddress, loadEmailConfig };

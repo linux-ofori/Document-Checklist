@@ -18,6 +18,7 @@ const {
   consumePendingEmailChallenge,
   changeUserPasswordById,
   createUser,
+  activatePasswordResetChallenge,
   deleteUserById,
   findUserByEmail,
   findUserById,
@@ -62,11 +63,28 @@ test('keeps verification and recovery fields private and legacy users unverified
     id: user._id,
     name: user.name,
     email: user.email,
+    emailVerified: false,
+    googleLinked: false,
     phone: null,
     preferences: toPublicUser(user).preferences,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt
   });
+});
+
+test('public user exposes only safe email-verification and Google-linking booleans', async () => {
+  const user = await createAccount('public-identity@example.test');
+  const publicUser = toPublicUser({
+    ...user,
+    emailVerifiedAt: new Date().toISOString(),
+    googleSubject: 'private-google-subject',
+    password: 'private-password-hash'
+  });
+
+  assert.equal(publicUser.emailVerified, true);
+  assert.equal(publicUser.googleLinked, true);
+  assert.equal(Object.hasOwn(publicUser, 'googleSubject'), false);
+  assert.equal(Object.hasOwn(publicUser, 'password'), false);
 });
 
 test('rotates and consumes current-email challenges once, storing only hashes', async () => {
@@ -156,6 +174,11 @@ test('consumes password-reset challenges once and increments the session version
 
   const resetHash = hash('password-reset-challenge');
   await issuePasswordResetChallenge(user._id, resetHash, resetExpiresAt());
+  assert.equal(await consumePasswordResetChallenge(
+    resetHash,
+    '$2a$04$before-delivery-password-hash'
+  ), null);
+  assert.ok(await activatePasswordResetChallenge(user._id, resetHash));
   const beforeReset = await findUserById(user._id);
   const reset = await consumePasswordResetChallenge(
     resetHash,
@@ -233,6 +256,7 @@ test('password resets release pending-email reservations and invalidate their ch
   );
   const resetHash = hash('password-reset-token');
   await issuePasswordResetChallenge(user._id, resetHash, resetExpiresAt());
+  assert.ok(await activatePasswordResetChallenge(user._id, resetHash));
 
   const reset = await consumePasswordResetChallenge(
     resetHash,

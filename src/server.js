@@ -72,6 +72,11 @@ const emailVerificationRoutes = createEmailVerificationRouter({
   emailService,
   frontendVerificationUrl: emailConfig.frontendVerificationUrl
 });
+const { createPasswordResetRouter } = require('./routes/passwordResetRoutes');
+const passwordResetRoutes = createPasswordResetRouter({
+  emailService,
+  frontendPasswordResetUrl: emailConfig.frontendPasswordResetUrl
+});
 const googleOAuthRoutes = require('./routes/googleOAuthRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
@@ -102,6 +107,7 @@ app.use((request, response, next) => {
 });
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', emailVerificationRoutes);
+app.use('/api/auth', passwordResetRoutes);
 app.use('/api/auth/google', googleOAuthRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/documents', documentRoutes);

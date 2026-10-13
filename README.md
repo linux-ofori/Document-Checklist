@@ -31,7 +31,7 @@ The file-backed NeDB databases are intended for one Node.js process using a priv
 
 Uploaded document files are stored privately under `data/uploads/` by default. `DOCUMENT_CHECKLIST_UPLOADS_DIRECTORY` can select another private local directory; it is resolved once at startup and is never controlled by request data. Keep that directory persistent and access-restricted.
 
-Email delivery is disabled by default. `EMAIL_ENABLED` accepts `true` or `false` and defaults to `false`. If enabled, `EMAIL_FROM` must be a valid email address; `EMAIL_REPLY_TO` is optional and, when set, must also be valid. `FRONTEND_EMAIL_VERIFICATION_URL` identifies the frontend `/verify-email` route used in verification messages; it defaults to `http://localhost:5173/verify-email` outside production and must be configured as an HTTPS URL in production. Its origin must be present in `CORS_ALLOWED_ORIGINS`. The server currently has no real delivery provider configured: enabling email without injecting a provider adapter fails at startup. Tests inject the fake provider. A real provider, durable outbox, and worker remain future work. The `emailChecklistCompletion` notification preference is an explicit opt-in and defaults to `false`.
+Email delivery is disabled by default. `EMAIL_ENABLED` accepts `true` or `false` and defaults to `false`. If enabled, `EMAIL_FROM` must be a valid email address; `EMAIL_REPLY_TO` is optional and, when set, must also be valid. `FRONTEND_EMAIL_VERIFICATION_URL` and `FRONTEND_PASSWORD_RESET_URL` identify the exact frontend `/verify-email` and `/reset-password` routes used in messages; they default to the corresponding `http://localhost:5173` URLs outside production and must be configured as HTTPS URLs in production. Their origins must be present in `CORS_ALLOWED_ORIGINS`. Email verification and password reset requests are rate-limited. Password-reset requests return a generic response for unknown, unverified, and eligible accounts; reset tokens are single-use, stored only as hashes, and expire after 30 minutes. Verification challenges expire after 24 hours. The server currently has no real delivery provider configured: enabling email without injecting a provider adapter fails at startup. Tests inject the fake provider. A real provider, durable outbox, and worker remain future work. The `emailChecklistCompletion` notification preference is an explicit opt-in and defaults to `false`.
 
 The Express app applies Helmet security headers before JSON parsing and API routes. Since this backend serves JSON rather than browser pages, Helmet's Content Security Policy header is disabled; a custom CSP is not needed for the API. If browser pages are added to this server later, define a CSP based on their actual scripts, styles, and resources.
 
@@ -93,7 +93,7 @@ Profile updates must include at least one editable profile field. Direct active-
 
 Email verification is optional for application access: new password-based accounts and legacy accounts without `emailVerifiedAt` may still log in and use the application. Authenticated users can request verification for their own account with `POST /api/auth/email-verification/request` and confirm using `POST /api/auth/email-verification/confirm` with `{ "token": "..." }`. Requesting verification for an already-verified account returns a safe already-verified response. A verification message is reported as sent only after the provider confirms delivery; disabled delivery and delivery failures return `503`, and the associated challenge is invalidated so it cannot be used. Confirmation rejects invalid, expired, and previously consumed tokens. Requests are limited by `EMAIL_VERIFICATION_REQUEST_RATE_LIMIT_MAX` and `EMAIL_VERIFICATION_REQUEST_RATE_LIMIT_WINDOW_MS` (defaults 3 per 15 minutes); confirmations use `EMAIL_VERIFICATION_CONFIRM_RATE_LIMIT_MAX` and `EMAIL_VERIFICATION_CONFIRM_RATE_LIMIT_WINDOW_MS` (defaults 10 per 15 minutes). The frontend `/verify-email` route must submit the link's `token` parameter to the confirmation endpoint; that frontend route is implemented separately.
 
-Pending-email changes and password-recovery routes are not implemented yet. New Google-only accounts are marked verified only from Google's validated `email_verified: true` claim. Linking Google to an existing local account does not change its verification state. Challenge tokens are stored only as hashes and expire after 24 hours for email verification or 30 minutes for password reset. Active and pending email identity coordination uses an in-process normalized-email lock; this supports the documented single-process deployment and does not coordinate multiple backend processes.
+Pending-email changes are not implemented yet. New Google-only accounts are marked verified only from Google's validated `email_verified: true` claim. Linking Google to an existing local account does not change its verification state. Challenge tokens are stored only as hashes and expire after 24 hours for email verification or 30 minutes for password reset. Public user objects include only the safe `emailVerified` and `googleLinked` booleans, never password hashes or provider identifiers. Active and pending email identity coordination uses an in-process normalized-email lock; this supports the documented single-process deployment and does not coordinate multiple backend processes.
 
 ### Authentication endpoints
 
@@ -102,6 +102,12 @@ Pending-email changes and password-recovery routes are not implemented yet. New 
 - `POST /api/auth/email-verification/request` requires a bearer token and an empty JSON body (or no body). It can issue a challenge only for the authenticated user. It returns `202` with `delivered: true` only after successful provider delivery, `200` if the user's address is already verified, and `503` when delivery is disabled or fails. Challenges from failed delivery are invalidated.
 - `POST /api/auth/email-verification/confirm` accepts exactly `{ "token": "..." }`. It returns `{ "verified": true }` after consuming a valid challenge; malformed, invalid, expired, or replayed tokens return `400`.
 - Verification links target `FRONTEND_EMAIL_VERIFICATION_URL` with a URL-encoded `token` query parameter. The frontend route is `/verify-email`; clients should exchange the token with the confirmation endpoint. Do not use the Google OAuth callback URL for email verification.
+
+#### Password recovery
+
+- `POST /api/auth/password-reset/request` accepts exactly `{ "email": "..." }`. Eligible verified local-password accounts receive a link to `FRONTEND_PASSWORD_RESET_URL` with a URL-encoded `token` query parameter. Eligible, unknown, and unverified accounts receive the same generic `200` response. When email is globally disabled, requests return a generic `503` before account lookup. With email enabled, provider exceptions and undelivered results return the same generic `200` response as ineligible accounts. A challenge is stored inactive and can be redeemed only after delivery is confirmed and activation is persisted; delivery or activation failures leave it unusable. The route also attempts to invalidate only that request's challenge after delivery failure; cleanup failures are logged without sensitive details and do not change the public response.
+- `POST /api/auth/password-reset/confirm` accepts exactly `{ "token": "...", "password": "..." }`. Passwords must be 8–128 characters and at most 72 UTF-8 bytes. A successful reset returns `{ "message": "Password reset successfully." }`, consumes the token once, and invalidates existing sessions. Invalid, expired, or replayed tokens return `400`.
+- Requests use `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX` / `PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW_MS` (defaults 5 per 15 minutes); confirmations use `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX` / `PASSWORD_RESET_CONFIRM_RATE_LIMIT_WINDOW_MS` (defaults 10 per 15 minutes).
 
 #### Google OAuth
 
@@ -113,7 +119,7 @@ The flow uses three endpoints:
 - `GET /api/auth/google/callback` is the fixed provider redirect. After successful verification, it redirects to the configured frontend callback with a short-lived ticket in the fragment; failures use a generic `google_sign_in_failed` fragment value.
 - `POST /api/auth/google/exchange` with `{ "ticket": "..." }` consumes the ticket and returns the same `{ "user": ..., "token": "..." }` session shape as local login. Expired or previously consumed tickets return `410 Gone`.
 
-To explicitly link Google to a local-password account, call the authorization endpoint with a valid bearer token and `{ "intent": "link", "currentPassword": "..." }`. Linking requires the current password, the authenticated session must remain valid through the flow, and an identity already linked elsewhere is rejected. A matching email address never links accounts automatically. Google-only users have no local password and cannot use local-password login or this password-confirmed linking flow. Email-verification and password-recovery routes, unlinking, and adding a local password remain outside this foundation.
+To explicitly link Google to a local-password account, call the authorization endpoint with a valid bearer token and `{ "intent": "link", "currentPassword": "..." }`. Linking requires the current password, the authenticated session must remain valid through the flow, and an identity already linked elsewhere is rejected. A matching email address never links accounts automatically. Google-only users have no local password and cannot use local-password login or this password-confirmed linking flow. Pending-email changes, unlinking, and adding a local password remain outside this foundation.
 
 OAuth transactions and exchange tickets are held in memory. Run one backend process only; pending transactions and tickets are lost on restart and are not shared across multiple instances.
 
@@ -140,6 +146,8 @@ Required JSON fields: `name`, `email`, `password`. Optional field: `phone`, a tr
 		"id": "generated-user-id",
 		"name": "A User",
 		"email": "user@example.com",
+		"emailVerified": false,
+		"googleLinked": false,
 		"phone": "+233 24 000 0000",
 		"createdAt": "2026-10-07T12:00:00.000Z",
 		"updatedAt": "2026-10-07T12:00:00.000Z"
@@ -177,6 +185,8 @@ Required JSON fields: `email`, `password`.
 		"id": "generated-user-id",
 		"name": "A User",
 		"email": "user@example.com",
+		"emailVerified": false,
+		"googleLinked": false,
 		"createdAt": "2026-10-07T12:00:00.000Z",
 		"updatedAt": "2026-10-07T12:00:00.000Z"
 	}

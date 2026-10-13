@@ -17,7 +17,8 @@ const pendingEmailTokenFields = [
 ];
 const passwordResetTokenFields = [
   'passwordResetTokenHash',
-  'passwordResetExpiresAt'
+  'passwordResetExpiresAt',
+  'passwordResetActivated'
 ];
 const EMAIL_CHALLENGE_TTL_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
@@ -57,6 +58,8 @@ function toPublicUser(user) {
     id: user._id,
     name: user.name,
     email: user.email,
+    emailVerified: Boolean(user.emailVerifiedAt),
+    googleLinked: Boolean(user.googleSubject),
     phone: typeof user.phone === 'string' ? user.phone : null,
     preferences: normalizePreferences(user.preferences),
     createdAt: user.createdAt,
@@ -477,8 +480,32 @@ async function issuePasswordResetChallenge(userId, tokenHash, expiresAt) {
     }, {
       $set: {
         passwordResetTokenHash: tokenHash,
-        passwordResetExpiresAt: expiresAt
+        passwordResetExpiresAt: expiresAt,
+        passwordResetActivated: false
       }
+    });
+  });
+}
+
+async function activatePasswordResetChallenge(userId, tokenHash, now = Date.now()) {
+  if (!tokenHashIsValid(tokenHash) || !Number.isSafeInteger(now)) {
+    throw new TypeError('A valid password reset token hash and activation time are required.');
+  }
+  return withAccountOperationLock(userId, async () => {
+    const user = await findUserById(userId);
+    if (!user || user.deleting || !user.emailVerifiedAt || typeof user.password !== 'string') {
+      return null;
+    }
+    return updateOne({
+      _id: userId,
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: { $gt: now },
+      passwordResetActivated: false,
+      emailVerifiedAt: { $exists: true },
+      password: { $exists: true },
+      deleting: { $ne: true }
+    }, {
+      $set: { passwordResetActivated: true }
     });
   });
 }
@@ -506,6 +533,7 @@ async function consumePasswordResetChallenge(tokenHash, newPasswordHash, now = D
         _id: currentUser._id,
         passwordResetTokenHash: tokenHash,
         passwordResetExpiresAt: { $gt: now },
+        passwordResetActivated: true,
         emailVerifiedAt: { $exists: true },
         password: { $exists: true },
         deleting: { $ne: true }
@@ -558,6 +586,26 @@ function invalidatePendingEmailChallenge(userId) {
   });
 }
 
+function invalidatePasswordResetChallenge(userId, tokenHash) {
+  if (!tokenHashIsValid(tokenHash)) {
+    throw new TypeError('A valid password reset token hash is required.');
+  }
+
+  return withAccountOperationLock(userId, async () => {
+    const user = await findUserById(userId);
+    if (!user || user.deleting) {
+      return null;
+    }
+    return updateOne({
+      _id: userId,
+      passwordResetTokenHash: tokenHash,
+      deleting: { $ne: true }
+    }, {
+      $unset: Object.fromEntries(passwordResetTokenFields.map((field) => [field, true]))
+    });
+  });
+}
+
 function incrementUserTokenVersionById(id) {
   return new Promise((resolve, reject) => {
     database.update(
@@ -594,7 +642,9 @@ module.exports = {
   findUserById,
   findUsersPendingDeletion,
   incrementUserTokenVersionById,
+  activatePasswordResetChallenge,
   invalidateEmailVerificationChallenge,
+  invalidatePasswordResetChallenge,
   invalidatePendingEmailChallenge,
   issueEmailVerificationChallenge,
   issuePasswordResetChallenge,

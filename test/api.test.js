@@ -328,6 +328,7 @@ test('public user serialization allows only intended user fields', () => {
     passwordHash: 'stored-hash',
     internalSecret: 'must-not-be-returned',
     emailVerifiedAt: '2026-10-06T00:00:00.000Z',
+    googleSubject: 'private-google-subject',
     emailVerificationTokenHash: 'internal-hash',
     emailVerificationExpiresAt: 1,
     emailVerificationEmail: 'public@example.com',
@@ -342,6 +343,8 @@ test('public user serialization allows only intended user fields', () => {
     id: 'user-id',
     name: 'Public User',
     email: 'public@example.com',
+    emailVerified: true,
+    googleLinked: true,
     phone: null,
     preferences: {
       notifications: {
@@ -356,6 +359,7 @@ test('public user serialization allows only intended user fields', () => {
   });
   assert.equal(Object.hasOwn(publicUser, 'password'), false);
   assert.equal(Object.hasOwn(publicUser, 'passwordHash'), false);
+  assert.equal(Object.hasOwn(publicUser, 'googleSubject'), false);
   assert.equal(Object.hasOwn(publicUser, 'deleting'), false);
   assert.equal(Object.hasOwn(publicUser, 'internalSecret'), false);
   assert.equal(Object.hasOwn(publicUser, 'tokenVersion'), false);
