@@ -21,6 +21,7 @@ import {
   saveRequirementStatus,
   submitApplication as submitApplicationRequest,
   updateApplicationDecision as updateApplicationDecisionRequest,
+  hasPersistentAuthToken,
   storeAuthToken,
 } from '../services'
 import { findAssistantAnswer } from '../data'
@@ -991,7 +992,7 @@ export function AppDataProvider({ children }) {
       try {
         const result = await savePassword({ currentPassword, newPassword })
         if (!isCurrentSession(requestSessionGeneration)) return false
-        if (!storeAuthToken(result?.token)) {
+        if (!storeAuthToken(result?.token, hasPersistentAuthToken())) {
           signOut()
           const error = new Error('Your password changed, but the new session could not be saved. Please sign in again.')
           error.code = 'TOKEN_STORAGE_FAILED'

@@ -9,6 +9,10 @@ import { Alert, LoadingState } from './components/ui'
 import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { SignupPage } from './pages/SignupPage'
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
+import { ResetPasswordPage } from './pages/ResetPasswordPage'
+import { VerifyEmailPage } from './pages/VerifyEmailPage'
+import { GoogleCallbackPage } from './pages/GoogleCallbackPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { ApplicationsPage } from './pages/ApplicationsPage'
 import { ApplicationDetailPage } from './pages/ApplicationDetailPage'
@@ -40,6 +44,14 @@ function renderRoute(route) {
       return <LoginPage />
     case 'signup':
       return <SignupPage />
+    case 'forgotPassword':
+      return <ForgotPasswordPage />
+    case 'resetPassword':
+      return <ResetPasswordPage />
+    case 'verifyEmail':
+      return <VerifyEmailPage />
+    case 'googleCallback':
+      return <GoogleCallbackPage />
     case 'dashboard':
       return <DashboardPage />
     case 'applications':

@@ -72,6 +72,33 @@ export function AuthProvider({ children }) {
     }))
   }, [])
 
+  const refreshUser = useCallback(async () => {
+    const currentVerificationId = verificationId.current
+    let result
+    try {
+      result = await request('auth/me')
+    } catch (requestError) {
+      if (requestError.status === 401 && verificationId.current === currentVerificationId) {
+        verificationId.current += 1
+        clearAuthToken()
+        setUser(null)
+        setError('')
+        setStatus('unauthenticated')
+      }
+      throw requestError
+    }
+    if (!result?.user) {
+      throw new Error('The current account could not be refreshed.')
+    }
+    if (verificationId.current !== currentVerificationId) return null
+
+    verificationId.current += 1
+    setUser(result.user)
+    setError('')
+    setStatus('authenticated')
+    return result.user
+  }, [])
+
   const signOut = useCallback(() => {
     verificationId.current += 1
     clearAuthToken()
@@ -81,7 +108,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, status, error, authenticate, updateUser, signOut }}>
+    <AuthContext.Provider value={{ user, status, error, authenticate, updateUser, refreshUser, signOut }}>
       {children}
     </AuthContext.Provider>
   )

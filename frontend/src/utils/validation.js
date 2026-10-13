@@ -106,16 +106,31 @@ export function validateProfileForm(values) {
   else if (name.length < 2) errors.name = 'Enter at least 2 characters.'
   else if (name.length > 100) errors.name = 'Name must be 100 characters or fewer.'
 
-  if (!String(values.email ?? '').trim()) {
-    errors.email = 'Enter your email address.'
-  } else if (!isValidEmail(values.email)) {
-    errors.email = 'Enter a valid email address.'
-  } else if (String(values.email).trim().length > 254) {
-    errors.email = 'Email address must be 254 characters or fewer.'
-  }
-
   if (!hasValidOptionalPhone(values.phone)) {
     errors.phone = 'Enter a valid phone number.'
+  }
+
+  return errors
+}
+
+export function validatePasswordResetForm(values) {
+  const errors = {}
+  const password = String(values.password ?? '')
+
+  if (!password) {
+    errors.password = 'Choose a new password.'
+  } else if (password.length < PASSWORD_MIN_LENGTH) {
+    errors.password = `Use at least ${PASSWORD_MIN_LENGTH} characters.`
+  } else if (password.length > 128) {
+    errors.password = 'Use 128 characters or fewer.'
+  } else if (new TextEncoder().encode(password).length > 72) {
+    errors.password = 'Use a password no longer than 72 UTF-8 bytes.'
+  }
+
+  if (!values.confirmPassword) {
+    errors.confirmPassword = 'Re-enter your new password.'
+  } else if (values.confirmPassword !== password) {
+    errors.confirmPassword = 'Passwords do not match.'
   }
 
   return errors

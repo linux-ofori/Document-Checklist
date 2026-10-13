@@ -4,12 +4,11 @@ function responseUser(response) {
   return response?.user ?? response
 }
 
-export async function saveProfile({ name, email, phone }) {
+export async function saveProfile({ name, phone }) {
   const response = await request('auth/me', {
     method: 'PUT',
     body: {
       name: String(name ?? '').trim(),
-      email: String(email ?? '').trim(),
       phone: String(phone ?? '').trim(),
     },
   })

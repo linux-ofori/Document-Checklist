@@ -1,27 +1,31 @@
 import { useState } from 'react'
-import { KeyRound, LogOut, Save, ShieldCheck, Sparkles } from 'lucide-react'
+import { KeyRound, Link2, LogOut, Save, ShieldCheck, Sparkles } from 'lucide-react'
 import { AppLayout } from '../layouts/AppLayout'
 import { Alert, Avatar, Button, Card, Input, LoadingState } from '../components/ui'
 import { useAppData } from '../hooks/useAppData'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAuth } from '../context/AuthProvider'
 import { LOGOUT_WARNING_MESSAGE } from '../context/appDataReducer'
-import { logout } from '../services'
+import { logout, requestEmailVerification, requestGoogleAuthorization } from '../services'
 import { validateProfileForm } from '../utils/validation'
 import { formatDate, formatDateTime, pluralize } from '../utils/format'
 import { ROUTES } from '../utils/routes'
 
+const GOOGLE_AUTH_INTENT_STORAGE_KEY = 'document-checklist-google-intent'
+
 function ProfileDetailsForm({ profile }) {
   const { updateProfile } = useAppData()
+  const { refreshUser } = useAuth()
 
   const [values, setValues] = useState({
     name: profile.name,
-    email: profile.email,
     phone: profile.phone,
   })
   const [errors, setErrors] = useState({})
   const [isSaving, setIsSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const [verificationState, setVerificationState] = useState('idle')
+  const [verificationError, setVerificationError] = useState('')
 
   const setValue = (key, value) => {
     setValues((current) => ({ ...current, [key]: value }))
@@ -46,7 +50,7 @@ function ProfileDetailsForm({ profile }) {
 
     setIsSaving(true)
     try {
-      await updateProfile({ name: values.name, email: values.email, phone: values.phone })
+      await updateProfile({ name: values.name, phone: values.phone })
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'We could not save your profile. Please try again.')
     } finally {
@@ -54,10 +58,42 @@ function ProfileDetailsForm({ profile }) {
     }
   }
 
+  const handleVerificationRequest = async () => {
+    setVerificationState('sending')
+    setVerificationError('')
+    try {
+      const result = await requestEmailVerification()
+      if (result?.verified === true) {
+        setVerificationState('verified')
+        try {
+          await refreshUser()
+        } catch (error) {
+          if (error?.status !== 401) {
+            setVerificationError('Your email is already verified, but we could not refresh your profile status.')
+          }
+        }
+      } else if (result?.delivered === true) {
+        setVerificationState('sent')
+      } else {
+        throw new Error('The server did not confirm that a verification email was sent.')
+      }
+    } catch (error) {
+      setVerificationState('idle')
+      setVerificationError(error instanceof Error ? error.message : 'We could not send the verification email.')
+    }
+  }
+
   return (
     <form className="form-stack" onSubmit={handleSubmit} noValidate>
       {formError ? (
         <Alert tone="danger" title="Profile not saved" description={formError} />
+      ) : null}
+      {verificationError ? (
+        <Alert
+          tone={verificationState === 'verified' ? 'warning' : 'danger'}
+          title={verificationState === 'verified' ? 'Verification status not refreshed' : 'Verification email not sent'}
+          description={verificationError}
+        />
       ) : null}
 
       <Input
@@ -72,12 +108,28 @@ function ProfileDetailsForm({ profile }) {
       <Input
         label="Email address"
         type="email"
-        required
-        value={values.email}
-        onChange={(event) => setValue('email', event.target.value)}
-        error={errors.email}
-        disabled={isSaving}
+        value={profile.email ?? ''}
+        readOnly
+        hint={profile.emailVerified === true ? 'Verified' : 'Not verified'}
       />
+      {profile.emailVerified !== true ? (
+        <div className="form-actions">
+          <Button
+            type="button"
+            variant="outline"
+            size="md"
+            isLoading={verificationState === 'sending'}
+            disabled={verificationState === 'sent' || verificationState === 'verified' || isSaving}
+            onClick={handleVerificationRequest}
+          >
+            {verificationState === 'verified'
+              ? 'Email already verified'
+              : verificationState === 'sent'
+                ? 'Verification email sent'
+                : 'Send verification email'}
+          </Button>
+        </div>
+      ) : null}
 
       <Input
         label="Phone number"
@@ -105,8 +157,18 @@ function ProfileDetailsForm({ profile }) {
 
 export function ProfilePage() {
   const { navigate } = useActiveRoute()
-  const { signOut } = useAuth()
-  const { profile, stats, isLoading, retryHydration, showToast } = useAppData()
+  const { signOut, user } = useAuth()
+  const { profile: appProfile, stats, isLoading, retryHydration, showToast } = useAppData()
+  const profile = appProfile
+    ? {
+        ...appProfile,
+        emailVerified: user?.emailVerified ?? appProfile.emailVerified,
+        googleLinked: user?.googleLinked ?? appProfile.googleLinked,
+      }
+    : null
+  const [googlePassword, setGooglePassword] = useState('')
+  const [googleLinkError, setGoogleLinkError] = useState('')
+  const [isLinkingGoogle, setIsLinkingGoogle] = useState(false)
   const handleLogout = async () => {
     let serverLogoutFailed = false
     try {
@@ -119,6 +181,35 @@ export function ProfilePage() {
     }
     signOut()
     navigate(ROUTES.login)
+  }
+
+  const handleGoogleLink = async (event) => {
+    event.preventDefault()
+    setGoogleLinkError('')
+    setIsLinkingGoogle(true)
+    try {
+      const result = await requestGoogleAuthorization({
+        intent: 'link',
+        currentPassword: googlePassword,
+      })
+      if (typeof result?.authorizationUrl !== 'string' || !result.authorizationUrl) {
+        throw new Error('Google linking is unavailable. Please try again later.')
+      }
+      try {
+        window.sessionStorage.setItem(GOOGLE_AUTH_INTENT_STORAGE_KEY, 'link')
+      } catch {
+        throw new Error('We could not save the Google-linking request. Please try again.')
+      }
+      window.location.assign(result.authorizationUrl)
+    } catch (error) {
+      try {
+        window.sessionStorage.removeItem(GOOGLE_AUTH_INTENT_STORAGE_KEY)
+      } catch {
+        // Ignore cleanup failure while reporting the authorization error.
+      }
+      setGoogleLinkError(error instanceof Error ? error.message : 'We could not start Google linking.')
+      setIsLinkingGoogle(false)
+    }
   }
 
   const documentCount = stats.completedDocuments + stats.inProgressDocuments + stats.missingDocuments
@@ -203,10 +294,46 @@ export function ProfilePage() {
 
         <Card
           title="Personal details"
-          description="Update the contact details associated with your account."
+          description="Update your name and phone number. Your email address remains read-only."
           padding="comfortable"
         >
           <ProfileDetailsForm key={profile.email} profile={profile} />
+        </Card>
+
+        <Card
+          title="Google sign-in"
+          description="Link Google to this account using your current password. Matching email addresses alone never link accounts."
+          padding="comfortable"
+        >
+          {profile.googleLinked === true ? (
+            <p className="ui-body">A Google identity is linked to this account.</p>
+          ) : (
+            <form className="form-stack" onSubmit={handleGoogleLink}>
+              {googleLinkError ? (
+                <Alert tone="danger" title="Google was not linked" description={googleLinkError} />
+              ) : null}
+              <Input
+                label="Current password"
+                type="password"
+                required
+                autoComplete="current-password"
+                value={googlePassword}
+                onChange={(event) => setGooglePassword(event.target.value)}
+                disabled={isLinkingGoogle}
+              />
+              <div className="form-actions">
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="md"
+                  isLoading={isLinkingGoogle}
+                  leadingIcon={isLinkingGoogle ? null : <Link2 size={16} aria-hidden="true" />}
+                >
+                  Link Google account
+                </Button>
+              </div>
+            </form>
+          )}
         </Card>
 
         <div className="dashboard-grid">

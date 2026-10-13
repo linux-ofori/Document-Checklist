@@ -7,16 +7,23 @@ import { Alert, Button, Checkbox, Input } from '../components/ui'
 import { useActiveRoute } from '../hooks/useActiveRoute'
 import { useAppData } from '../hooks/useAppData'
 import { useAuth } from '../context/AuthProvider'
-import { request, storeAuthToken } from '../services'
+import {
+  consumeGoogleRememberPreference,
+  request,
+  requestGoogleAuthorization,
+  storeAuthToken,
+  storeGoogleRememberPreference,
+} from '../services'
 import { validateLoginForm } from '../utils/validation'
 import { ROUTES } from '../utils/routes'
 
 const INITIAL_VALUES = { email: '', password: '', remember: true }
+const GOOGLE_AUTH_INTENT_STORAGE_KEY = 'document-checklist-google-intent'
 
 export function LoginPage() {
   const { navigate } = useActiveRoute()
-  const { authenticate } = useAuth()
-  const { isLoading, showToast } = useAppData()
+  const { authenticate, signOut } = useAuth()
+  const { showToast } = useAppData()
 
   const [values, setValues] = useState(INITIAL_VALUES)
   const [errors, setErrors] = useState({})
@@ -56,7 +63,8 @@ export function LoginPage() {
         },
       })
 
-      if (!storeAuthToken(result?.token)) {
+      if (!storeAuthToken(result?.token, values.remember)) {
+        signOut()
         throw new Error('We could not save your sign-in. Please try again.')
       }
 
@@ -70,17 +78,33 @@ export function LoginPage() {
     }
   }
 
-  const handleGoogle = () => {
+  const handleGoogle = async () => {
     setIsGoogleLoading(true)
-    window.setTimeout(() => {
+    setFormError('')
+    try {
+      const result = await requestGoogleAuthorization({ intent: 'login' })
+      if (typeof result?.authorizationUrl !== 'string' || !result.authorizationUrl) {
+        throw new Error('Google sign-in is unavailable. Please try again later.')
+      }
+      if (!storeGoogleRememberPreference(values.remember)) {
+        throw new Error('We could not save your sign-in preference. Please try again.')
+      }
+      try {
+        window.sessionStorage.setItem(GOOGLE_AUTH_INTENT_STORAGE_KEY, 'login')
+      } catch {
+        consumeGoogleRememberPreference()
+        throw new Error('We could not save your sign-in preference. Please try again.')
+      }
+      window.location.assign(result.authorizationUrl)
+    } catch (error) {
+      try {
+        window.sessionStorage.removeItem(GOOGLE_AUTH_INTENT_STORAGE_KEY)
+      } catch {
+        // Ignore cleanup failure while reporting the authorization error.
+      }
+      setFormError(error instanceof Error ? error.message : 'Google sign-in is unavailable. Please try again later.')
       setIsGoogleLoading(false)
-      showToast('Signed in with Google.')
-      navigate(ROUTES.dashboard)
-    }, 700)
-  }
-
-  const handleForgotPassword = () => {
-    showToast('Password reset instructions would be emailed to you.', 'info')
+    }
   }
 
   return (
@@ -136,7 +160,11 @@ export function LoginPage() {
                   disabled={isSubmitting}
                   onChange={(event) => setValue('remember', event.target.checked)}
                 />
-                <button type="button" className="marketing-auth__link" onClick={handleForgotPassword}>
+                <button
+                  type="button"
+                  className="marketing-auth__link"
+                  onClick={() => navigate(ROUTES.forgotPassword)}
+                >
                   Forgot password?
                 </button>
               </div>

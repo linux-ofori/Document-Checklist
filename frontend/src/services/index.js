@@ -1,13 +1,24 @@
 export {
   clearAuthToken,
+  consumeGoogleRememberPreference,
   createId,
+  hasPersistentAuthToken,
   hasAuthToken,
   request,
   resolveAfter,
   resolvePayload,
   storeAuthToken,
+  storeGoogleRememberPreference,
 } from './client'
-export { logout } from './authService'
+export {
+  confirmEmailVerification,
+  confirmPasswordReset,
+  exchangeGoogleTicket,
+  logout,
+  requestEmailVerification,
+  requestGoogleAuthorization,
+  requestPasswordReset,
+} from './authService'
 export {
   fetchProcesses,
   fetchProcess,

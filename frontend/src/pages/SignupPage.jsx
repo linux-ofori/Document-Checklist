@@ -28,7 +28,7 @@ const RULES = [
 
 export function SignupPage() {
   const { navigate } = useActiveRoute()
-  const { authenticate } = useAuth()
+  const { authenticate, signOut } = useAuth()
   const { isLoading, showToast } = useAppData()
 
   const [values, setValues] = useState(INITIAL_VALUES)
@@ -80,6 +80,7 @@ export function SignupPage() {
       })
 
       if (!storeAuthToken(result?.token)) {
+        signOut()
         throw new Error('Your account was created, but we could not save your sign-in. Please log in.')
       }
 
