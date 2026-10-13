@@ -23,8 +23,8 @@ import {
   updateApplicationDecision as updateApplicationDecisionRequest,
   hasPersistentAuthToken,
   storeAuthToken,
+  askAssistantQuestion as askAssistantQuestionRequest,
 } from '../services'
-import { findAssistantAnswer } from '../data'
 import {
   buildApplicationView,
   buildDashboardStats,
@@ -138,6 +138,19 @@ function lifecycleErrorMessage(error, fallback) {
     .join(' ')
 }
 
+function assistantErrorMessage(error) {
+  if (error?.status === 400) return 'Please check your question and try again.'
+  if (error?.status === 404) return 'That application could not be found. Refresh and try again.'
+  if (error?.status === 429) return 'Too many questions right now. Please wait and try again.'
+  if (error?.status === 502) return 'The assistant could not provide a valid answer. Please try again.'
+  if (error?.status === 503) return 'The assistant is temporarily unavailable.'
+  if (error?.status === 504) return 'The assistant took too long to respond. Please try again.'
+  if (error instanceof TypeError) {
+    return 'Could not reach the assistant. Check your connection and try again.'
+  }
+  return 'We could not get an answer. Please try again.'
+}
+
 export function AppDataProvider({ children }) {
   const [state, dispatch] = useReducer(appDataReducer, INITIAL_STATE)
   const [hydrationRetry, setHydrationRetry] = useState(0)
@@ -154,6 +167,8 @@ export function AppDataProvider({ children }) {
   const notificationRequestGenerationRef = useRef(0)
   const notificationFetchInFlightGenerationRef = useRef(null)
   const lifecycleRequestsRef = useRef(new Set())
+  const assistantRequestRef = useRef(null)
+  const assistantApplicationIdRef = useRef(null)
   const [authSession, setAuthSession] = useState(() => ({
     authStatus,
     sessionId,
@@ -186,6 +201,14 @@ export function AppDataProvider({ children }) {
       && authSessionRef.current.generation === generation,
     [],
   )
+
+  useEffect(() => () => {
+    const activeRequest = assistantRequestRef.current
+    if (activeRequest) {
+      activeRequest.controller.abort()
+      assistantRequestRef.current = null
+    }
+  }, [authStatus, sessionId, sessionGeneration])
 
   useEffect(() => {
     if (authStatus === 'unauthenticated') {
@@ -1041,22 +1064,59 @@ export function AppDataProvider({ children }) {
     [isCurrentSession, refreshNotifications, state.profile, updateUser],
   )
 
-  const openAssistant = useCallback(() => {
-    dispatch({ type: ACTIONS.ASSISTANT_OPENED })
+  const openAssistant = useCallback((applicationId) => {
+    const nextApplicationId = typeof applicationId === 'string' ? applicationId : null
+    const contextChanged = assistantApplicationIdRef.current !== nextApplicationId
+    assistantApplicationIdRef.current = nextApplicationId
+
+    if (contextChanged) {
+      const activeRequest = assistantRequestRef.current
+      if (activeRequest && activeRequest.applicationId !== nextApplicationId) {
+        assistantRequestRef.current = null
+        activeRequest.controller.abort()
+      }
+    }
+
+    dispatch({
+      type: ACTIONS.ASSISTANT_OPENED,
+      payload: { applicationId: nextApplicationId },
+    })
+    if (contextChanged) {
+      dispatch({
+        type: ACTIONS.ASSISTANT_STATE,
+        payload: { isThinking: false, error: null },
+      })
+    }
   }, [])
 
   const closeAssistant = useCallback(() => {
+    const activeRequest = assistantRequestRef.current
+    if (activeRequest) {
+      activeRequest.controller.abort()
+      assistantRequestRef.current = null
+    }
     dispatch({ type: ACTIONS.ASSISTANT_CLOSED })
   }, [])
 
   const askAssistant = useCallback(
-    (question) => {
+    async (question) => {
       const trimmed = String(question ?? '').trim()
-      if (!trimmed) return
+      if (!trimmed || !isCurrentSession(authSessionRef.current.generation)) return
 
+      const requestSessionGeneration = authSessionRef.current.generation
+      const pendingRequest = assistantRequestRef.current
+      if (pendingRequest?.sessionGeneration === requestSessionGeneration) return
+      pendingRequest?.controller.abort()
+      const controller = new AbortController()
+      const assistantRequest = {
+        controller,
+        sessionGeneration: requestSessionGeneration,
+        applicationId: sessionState.assistant.applicationId,
+      }
+      assistantRequestRef.current = assistantRequest
       dispatch({
         type: ACTIONS.ASSISTANT_STATE,
-        payload: { isThinking: true },
+        payload: { isThinking: true, error: null },
       })
 
       dispatch({
@@ -1069,23 +1129,53 @@ export function AppDataProvider({ children }) {
         },
       })
 
-      window.setTimeout(() => {
-        const answer = findAssistantAnswer(trimmed)
-        dispatch({ type: ACTIONS.ASSISTANT_STATE, payload: { isThinking: false } })
+      const isCurrentAssistantRequest = () =>
+        assistantRequestRef.current === assistantRequest
+        && isCurrentSession(requestSessionGeneration)
+
+      try {
+        const { answer, sources } = await askAssistantQuestionRequest({
+          message: trimmed,
+          ...(sessionState.assistant.applicationId
+            ? { applicationId: sessionState.assistant.applicationId }
+            : {}),
+          signal: controller.signal,
+        })
+        if (!isCurrentAssistantRequest()) return
         dispatch({
           type: ACTIONS.ASSISTANT_MESSAGE,
           payload: {
             id: `assistant-${Date.now()}`,
             role: 'assistant',
-            title: answer.title,
-            body: answer.body,
-            followUp: answer.followUp,
+            body: answer,
+            sources,
             createdAt: new Date().toISOString(),
           },
         })
-      }, 620)
+      } catch (error) {
+        if (!isCurrentAssistantRequest() || error?.name === 'AbortError') return
+        if (error?.status === 401) {
+          assistantRequestRef.current = null
+          signOut()
+          return
+        }
+        dispatch({
+          type: ACTIONS.ASSISTANT_STATE,
+          payload: { error: assistantErrorMessage(error) },
+        })
+      } finally {
+        if (assistantRequestRef.current === assistantRequest) {
+          assistantRequestRef.current = null
+          if (isCurrentSession(requestSessionGeneration)) {
+            dispatch({
+              type: ACTIONS.ASSISTANT_STATE,
+              payload: { isThinking: false },
+            })
+          }
+        }
+      }
     },
-    [],
+    [isCurrentSession, sessionState.assistant.applicationId, signOut],
   )
 
   const openDocumentPreview = useCallback((documentId) => {

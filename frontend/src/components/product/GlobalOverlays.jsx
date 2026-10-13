@@ -3,20 +3,31 @@ import { DocumentPreviewModal } from './DocumentPreviewModal'
 import { AskAiPanel } from './AskAiPanel'
 import { Toast } from './Toast'
 import { useActiveRoute } from '../../hooks/useActiveRoute'
-import { ROUTES } from '../../utils/routes'
+import { useAuth } from '../../context/AuthProvider'
+import { matchRoute } from '../../utils/routes'
 
-const MARKETING_ROUTES = [ROUTES.landing, ROUTES.login, ROUTES.signup]
+const AUTHENTICATED_APP_ROUTES = new Set([
+  'dashboard',
+  'applications',
+  'chooseProcess',
+  'application',
+  'documents',
+  'reminders',
+  'profile',
+  'settings',
+])
 
 export function GlobalOverlays() {
   const { path } = useActiveRoute()
-  const isMarketing = MARKETING_ROUTES.includes(path)
+  const { status } = useAuth()
+  const isAuthenticatedAppRoute = AUTHENTICATED_APP_ROUTES.has(matchRoute(path).name)
 
   return (
     <>
       <UploadDocumentModal />
       <DocumentPreviewModal />
       <Toast />
-      {isMarketing ? null : <AskAiPanel />}
+      {status === 'authenticated' && isAuthenticatedAppRoute ? <AskAiPanel /> : null}
     </>
   )
 }

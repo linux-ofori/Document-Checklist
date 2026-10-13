@@ -50,3 +50,4 @@ export {
   readAllNotifications,
 } from './notificationService'
 export { saveProfile, savePassword, savePreferences } from './profileService'
+export { askAssistantQuestion } from './assistantService'

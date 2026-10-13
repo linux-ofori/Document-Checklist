@@ -3,7 +3,7 @@ import { Bot, Send, Sparkles, X } from 'lucide-react'
 import { ASSISTANT_SUGGESTIONS } from '../../data'
 import { useAppData } from '../../hooks/useAppData'
 import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
-import { Button, IconButton, LoadingState } from '../ui'
+import { Alert, Button, IconButton, LoadingState } from '../ui'
 import { formatRelativeTime } from '../../utils/format'
 import { cn } from '../../utils/cn'
 
@@ -54,7 +54,7 @@ export function AskAiPanel() {
         </span>
         <div className="ask-panel__heading">
           <p className="ask-panel__title">Ask AI</p>
-          <p className="ui-caption">Answers come from your own checklists</p>
+          <p className="ui-caption">Questions are sent to the assistant service. Avoid sensitive details.</p>
         </div>
         <IconButton label="Close Ask AI" onClick={closeAssistant}>
           <X size={18} aria-hidden="true" />
@@ -79,13 +79,21 @@ export function AskAiPanel() {
               {message.followUp ? (
                 <p className="ask-message__follow-up">{message.followUp}</p>
               ) : null}
+              {message.sources?.length ? (
+                <p className="ask-message__follow-up">
+                  Sources: {message.sources.map((source) => source.label).join(', ')}
+                </p>
+              ) : null}
               <span className="ui-caption">{formatRelativeTime(message.createdAt)}</span>
             </div>
           </div>
         ))}
 
         {assistant.isThinking ? (
-          <LoadingState label="Reading your checklists" size="sm" />
+          <LoadingState label="Getting an answer" size="sm" />
+        ) : null}
+        {assistant.error ? (
+          <Alert tone="warning" description={assistant.error} />
         ) : null}
       </div>
 
@@ -111,6 +119,7 @@ export function AskAiPanel() {
           id="ask-ai-input"
           className="ui-field__control"
           placeholder="Ask about a checklist, a document or a deadline"
+          maxLength={2000}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
         />

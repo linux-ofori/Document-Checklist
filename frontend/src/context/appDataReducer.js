@@ -54,7 +54,13 @@ export const INITIAL_STATE = {
   notificationReadMutationVersions: {},
   profile: null,
   upload: { isOpen: false, prefill: null, isSubmitting: false },
-  assistant: { isOpen: false, isThinking: false, messages: [] },
+  assistant: {
+    isOpen: false,
+    isThinking: false,
+    messages: [],
+    applicationId: null,
+    error: null,
+  },
   preview: { isOpen: false, documentId: null },
   toast: null,
 }
@@ -63,7 +69,7 @@ const WELCOME_MESSAGE = {
   id: 'assistant-welcome',
   role: 'assistant',
   title: 'Ask me about your paperwork',
-  body: 'I can read your checklists, tell you what is still missing, and point out anything that is about to expire. Nothing you ask leaves this device.',
+  body: 'I can help explain your application checklist and upcoming expiries.',
   followUp: 'Try one of the suggestions below to get started.',
   createdAt: '2026-09-30T06:45:00.000Z',
 }
@@ -423,10 +429,21 @@ export function appDataReducer(state, action) {
       return { ...state, upload: { ...state.upload, ...action.payload } }
 
     case ACTIONS.ASSISTANT_OPENED:
-      return { ...state, assistant: { ...state.assistant, isOpen: true } }
+      return {
+        ...state,
+        assistant: {
+          ...state.assistant,
+          isOpen: true,
+          applicationId: action.payload?.applicationId ?? null,
+          error: null,
+        },
+      }
 
     case ACTIONS.ASSISTANT_CLOSED:
-      return { ...state, assistant: { ...state.assistant, isOpen: false, isThinking: false } }
+      return {
+        ...state,
+        assistant: { ...state.assistant, isOpen: false, isThinking: false, error: null },
+      }
 
     case ACTIONS.ASSISTANT_STATE:
       return { ...state, assistant: { ...state.assistant, ...action.payload } }

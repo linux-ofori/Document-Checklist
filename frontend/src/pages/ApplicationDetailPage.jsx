@@ -411,7 +411,7 @@ export function ApplicationDetailPage({ applicationId }) {
                   variant="ghost"
                   size="sm"
                   leadingIcon={<Sparkles size={14} aria-hidden="true" />}
-                  onClick={openAssistant}
+                  onClick={() => openAssistant(application.id)}
                 >
                   Ask AI
                 </Button>
