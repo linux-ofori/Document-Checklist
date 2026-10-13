@@ -20,6 +20,13 @@ const emailService = createEmailService({
 });
 const { loadGoogleOAuthConfig } = require('./config/googleOAuth');
 loadGoogleOAuthConfig();
+const { loadAssistantConfig } = require('./config/assistant');
+const assistantConfig = loadAssistantConfig();
+const { createAssistantProvider } = require('./services/assistantProvider');
+const assistantProvider = createAssistantProvider({
+  enabled: assistantConfig.enabled,
+  timeoutMs: assistantConfig.requestTimeoutMs
+});
 
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '1d';
 try {
@@ -81,6 +88,15 @@ const googleOAuthRoutes = require('./routes/googleOAuthRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const { createAssistantRouter } = require('./routes/assistantRoutes');
+const {
+  defaultAssistantContextAssembler
+} = require('./services/assistantContext');
+const assistantRoutes = createAssistantRouter({
+  config: assistantConfig,
+  provider: assistantProvider,
+  contextAssembler: defaultAssistantContextAssembler
+});
 const { startServerAfterRecovery } = require('./services/serverStartup');
 const { initializeUserDatabase } = require('./config/database');
 const userDatabaseInitialization = initializeUserDatabase();
@@ -112,6 +128,7 @@ app.use('/api/auth/google', googleOAuthRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/assistant', assistantRoutes);
 
 app.use('/api', (request, response) => {
   return response.status(404).json({ error: 'Route not found.' });
