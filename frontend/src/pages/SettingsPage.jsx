@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Bell, KeyRound, Save, ShieldCheck } from 'lucide-react'
+import { Bell, KeyRound, Save } from 'lucide-react'
 import { AppLayout } from '../layouts/AppLayout'
 import { Alert, Button, Card, Input, LoadingState, Switch } from '../components/ui'
 import { useAppData } from '../hooks/useAppData'
@@ -73,7 +73,7 @@ function PreferencesForm({ profile }) {
 }
 
 export function SettingsPage() {
-  const { profile, isLoading, retryHydration, changePassword, showToast } = useAppData()
+  const { profile, isLoading, retryHydration, changePassword } = useAppData()
 
   const [passwordValues, setPasswordValues] = useState(EMPTY_PASSWORD_VALUES)
   const [passwordErrors, setPasswordErrors] = useState({})
@@ -217,23 +217,14 @@ export function SettingsPage() {
         <div className="dashboard-grid">
           <Card
             title="Account security"
-            description="Two-factor authentication is not enabled on this account."
+            description="Two-factor authentication is not currently available."
             padding="comfortable"
-            footer={
-              <Button
-                variant="outline"
-                size="md"
-                leadingIcon={<ShieldCheck size={16} aria-hidden="true" />}
-                onClick={() => showToast('Two-factor setup would open here.', 'info')}
-              >
-                Enable two-factor
-              </Button>
-            }
           >
-            <p className="ui-body">
-              Adding a second step makes it much harder for someone else to get into your document
-              library, even if they guess your password.
-            </p>
+            <Alert
+              tone="info"
+              title="Two-factor authentication unavailable"
+              description="Setup is not currently supported."
+            />
           </Card>
 
           <Card title="Data and privacy" padding="comfortable">

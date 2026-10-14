@@ -17,7 +17,6 @@ const INITIAL_VALUES = {
   password: '',
   confirmPassword: '',
   terms: false,
-  updates: true,
 }
 
 const RULES = [
@@ -29,7 +28,7 @@ const RULES = [
 export function SignupPage() {
   const { navigate } = useActiveRoute()
   const { authenticate, signOut } = useAuth()
-  const { isLoading, showToast } = useAppData()
+  const { showToast } = useAppData()
 
   const [values, setValues] = useState(INITIAL_VALUES)
   const [errors, setErrors] = useState({})
@@ -226,13 +225,6 @@ export function SignupPage() {
                 disabled={isSubmitting}
                 onChange={(event) => setValue('terms', event.target.checked)}
                 error={errors.terms}
-              />
-
-              <Checkbox
-                label="Send me a weekly summary of missing documents and expiring items."
-                checked={values.updates}
-                disabled={isSubmitting}
-                onChange={(event) => setValue('updates', event.target.checked)}
               />
 
               <Button

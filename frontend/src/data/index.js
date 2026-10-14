@@ -1,8 +1,6 @@
 export { APP_NAME, APP_SHORT_NAME, APP_TAGLINE, primaryNavigation, secondaryNavigation } from './navigation'
 export { PROCESSES, PROCESSES_BY_ID, getProcessById } from './processes'
 export { REQUIREMENT_TEMPLATES, getRequirementTemplate } from './requirements'
-export { APPLICATIONS, APPLICATION_DETAIL_LABELS } from './applications'
-export { DOCUMENTS } from './documents'
 export {
   DOCUMENT_TYPES,
   DOCUMENT_TYPE_OPTIONS,
@@ -12,13 +10,12 @@ export {
   getDocumentTypeLabel,
 } from './documentTypes'
 export {
-  NOTIFICATIONS,
   NOTIFICATION_KINDS,
   NOTIFICATION_KIND_LABELS,
   isExpiryNotification,
 } from './notifications'
-export { PROFILE, PREFERENCE_OPTIONS } from './profile'
-export { ASSISTANT_SUGGESTIONS, ASSISTANT_ANSWERS, findAssistantAnswer } from './assistant'
+export { PREFERENCE_OPTIONS } from './profile'
+export { ASSISTANT_SUGGESTIONS } from './assistant'
 export {
   MARKETING_LINKS,
   LANDING_FEATURES,

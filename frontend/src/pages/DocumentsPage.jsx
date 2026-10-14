@@ -328,7 +328,7 @@ export function DocumentsPage() {
         isOpen={isExpiring}
         onClose={() => setIsExpiring(false)}
         title="Update expiry date"
-        description="We use this to warn you 60, 30 and 7 days before the document runs out."
+        description="We use this to warn you 7 days and 1 day before the document runs out."
         size="sm"
         footer={
           <>

@@ -779,7 +779,7 @@ function UploadForm({
             <span>
               {values.fileName
                 ? 'Tip: name files clearly, for example “Ghana Card 2026”, so expiry reminders stay accurate.'
-                : 'Adding expiry dates lets Smart Document Checklist warn you 60, 30 and 7 days before a document runs out.'}
+                : 'Adding expiry dates lets Smart Document Checklist warn you 7 days and 1 day before a document runs out.'}
             </span>
           </div>
         </>

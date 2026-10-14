@@ -53,7 +53,7 @@ export const LANDING_STEPS = [
 
 export const LANDING_PROOF_POINTS = [
   'Works for passports, business, licensing and university applications',
-  'Reminders 60, 30 and 7 days before a document expires',
+  'Reminders 7 days and 1 day before a document expires',
   'Your files stay private and can be removed at any time',
 ]
 
