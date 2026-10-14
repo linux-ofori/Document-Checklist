@@ -19,6 +19,7 @@ process.env.REGISTRATION_RATE_LIMIT_MAX = '50';
 
 const app = require('../src/server');
 const applicationsDatabase = require('../src/config/applicationsDatabase');
+const usersDatabase = require('../src/config/database');
 const notificationsDatabase = require('../src/config/notificationsDatabase');
 const { findNotificationsByOwnerId } = require('../src/models/notificationModel');
 const { findApplicationById } = require('../src/models/applicationModel');
@@ -86,6 +87,13 @@ function insertApplication(application) {
 function updateApplicationRecord(id, update) {
   return new Promise((resolve, reject) => {
     applicationsDatabase.update({ _id: id }, update, {}, (error, count) =>
+      error ? reject(error) : resolve(count));
+  });
+}
+
+function updateUserRecord(id, update) {
+  return new Promise((resolve, reject) => {
+    usersDatabase.update({ _id: id }, update, {}, (error, count) =>
       error ? reject(error) : resolve(count));
   });
 }
@@ -934,6 +942,7 @@ test('account deletion removes only the owner applications and embedded checklis
 
 test('creates notifications only on transitions to completed and supports completion after reopening', async () => {
   const user = await registerUser('Completion Owner', 'completion-owner@example.com');
+  assert.equal(user.user.preferences.notifications.applicationUpdates, true);
   const applicationResponse = await request('/api/applications', {
     method: 'POST',
     token: user.token,
@@ -1029,6 +1038,136 @@ test('creates notifications only on transitions to completed and supports comple
   assert.equal(completedFromInProgress.status, 200);
   assert.equal(Object.hasOwn(completedFromInProgress.payload, 'notification'), true);
   assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 4);
+});
+
+test('applicationUpdates controls completion notifications without blocking checklist updates', async () => {
+  const user = await registerUser('Preference Owner', 'preference-owner@example.com');
+  assert.equal(user.user.preferences.notifications.applicationUpdates, true);
+  const application = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+
+  const defaultEnabledCompletion = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(defaultEnabledCompletion.status, 200);
+  assert.equal(Object.hasOwn(defaultEnabledCompletion.payload, 'notification'), true);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 1);
+
+  const disabledPreference = await request('/api/auth/me', {
+    method: 'PUT',
+    token: user.token,
+    body: { preferences: { notifications: { applicationUpdates: false } } }
+  });
+  assert.equal(disabledPreference.status, 200);
+  assert.equal(
+    disabledPreference.payload.user.preferences.notifications.applicationUpdates,
+    false
+  );
+
+  const disabledCompletion = await request(
+    `/api/applications/${application.id}/requirements/photograph`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(disabledCompletion.status, 200);
+  assert.equal(
+    disabledCompletion.payload.application.requirements.find(({ key }) => key === 'photograph').status,
+    'completed'
+  );
+  assert.equal(Object.hasOwn(disabledCompletion.payload, 'notification'), false);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 1);
+
+  const enabledPreference = await request('/api/auth/me', {
+    method: 'PUT',
+    token: user.token,
+    body: { preferences: { notifications: { applicationUpdates: true } } }
+  });
+  assert.equal(enabledPreference.status, 200);
+
+  const reenabledCompletion = await request(
+    `/api/applications/${application.id}/requirements/birth-certificate`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+  assert.equal(reenabledCompletion.status, 200);
+  assert.equal(Object.hasOwn(reenabledCompletion.payload, 'notification'), true);
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 2);
+});
+
+test('legacy users without applicationUpdates retain completion notifications by default', async () => {
+  const user = await registerUser('Legacy Preference Owner', 'legacy-preference-owner@example.com');
+  const unsetCount = await updateUserRecord(user.user.id, {
+    $unset: { 'preferences.notifications.applicationUpdates': true }
+  });
+  assert.equal(unsetCount, 1);
+
+  const storedUser = await findUserById(user.user.id);
+  assert.equal(
+    Object.hasOwn(storedUser.preferences.notifications, 'applicationUpdates'),
+    false
+  );
+
+  const application = (await request('/api/applications', {
+    method: 'POST',
+    token: user.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  const completion = await request(
+    `/api/applications/${application.id}/requirements/identity-card`,
+    { method: 'PATCH', token: user.token, body: { status: 'completed' } }
+  );
+
+  assert.equal(completion.status, 200);
+  assert.equal(completion.payload.notification.kind, 'application');
+  assert.equal(completion.payload.notification.title, 'Checklist requirement completed');
+  assert.equal((await findNotificationsByOwnerId(user.user.id)).length, 1);
+});
+
+test('applicationUpdates preference is isolated between application owners', async () => {
+  const notificationsDisabledUser = await registerUser(
+    'Notifications Disabled Owner',
+    'notifications-disabled-owner@example.com'
+  );
+  const notificationsEnabledUser = await registerUser(
+    'Notifications Enabled Owner',
+    'notifications-enabled-owner@example.com'
+  );
+
+  const disabledPreference = await request('/api/auth/me', {
+    method: 'PUT',
+    token: notificationsDisabledUser.token,
+    body: { preferences: { notifications: { applicationUpdates: false } } }
+  });
+  assert.equal(disabledPreference.status, 200);
+
+  const disabledApplication = (await request('/api/applications', {
+    method: 'POST',
+    token: notificationsDisabledUser.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+  const enabledApplication = (await request('/api/applications', {
+    method: 'POST',
+    token: notificationsEnabledUser.token,
+    body: { processId: 'passport' }
+  })).payload.application;
+
+  const disabledCompletion = await request(
+    `/api/applications/${disabledApplication.id}/requirements/identity-card`,
+    { method: 'PATCH', token: notificationsDisabledUser.token, body: { status: 'completed' } }
+  );
+  const enabledCompletion = await request(
+    `/api/applications/${enabledApplication.id}/requirements/identity-card`,
+    { method: 'PATCH', token: notificationsEnabledUser.token, body: { status: 'completed' } }
+  );
+
+  assert.equal(disabledCompletion.status, 200);
+  assert.equal(Object.hasOwn(disabledCompletion.payload, 'notification'), false);
+  assert.equal(enabledCompletion.status, 200);
+  assert.equal(Object.hasOwn(enabledCompletion.payload, 'notification'), true);
+  assert.equal((await findNotificationsByOwnerId(notificationsDisabledUser.user.id)).length, 0);
+  assert.equal((await findNotificationsByOwnerId(notificationsEnabledUser.user.id)).length, 1);
 });
 
 test('notification persistence failure does not fail a completed requirement update', async () => {

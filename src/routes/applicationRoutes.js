@@ -1,7 +1,7 @@
 const express = require('express');
 const requireAuth = require('../middleware/authMiddleware');
 const withAccountOperationLock = require('../models/accountOperationLock');
-const { findUserById } = require('../models/userModel');
+const { findUserById, toPublicUser } = require('../models/userModel');
 const { findDocumentById, getDocumentApplicationIds } = require('../models/documentModel');
 const {
   createApplication,
@@ -344,6 +344,8 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
       if (!owner || owner.deleting) {
         return { kind: 'missing-owner' };
       }
+      const applicationUpdatesEnabled = toPublicUser(owner)
+        .preferences.notifications.applicationUpdates;
 
       const application = await findApplicationById(request.params.id, request.user.id);
       if (!application) {
@@ -421,7 +423,9 @@ router.patch('/:id/requirements/:key', async (request, response, next) => {
       }
 
       let notification;
-      if ((previousStatus === 'missing' || previousStatus === 'in-progress') && status === 'completed') {
+      if (applicationUpdatesEnabled
+          && (previousStatus === 'missing' || previousStatus === 'in-progress')
+          && status === 'completed') {
         try {
           notification = toPublicNotification(await createRequirementCompletionNotification({
             ownerId: request.user.id,
